@@ -7138,6 +7138,10 @@ sim.ep.components.MEMORY = {
         return value
     }
 };
+sim.ep.states["MEM_ACC"] 	= { name:"MEM_ACC", verbal: "Veces que el código ha accedido a la memoria",
+                                visible: false, nbits:"32", value:0, default_value:0,
+                                draw_data: []};
+
 sim.ep.internal_states.segments = {};
 sim.ep.internal_states.MP = {};
 sim.ep.internal_states.MP_wc = 0;
@@ -7224,6 +7228,9 @@ sim.ep.behaviors.MEM_READ = {
         sim.ep.states[s_expr[2]].value = dbvalue >>> 0;
         sim.ep.signals[s_expr[4]].value = 1;
         show_main_memory(sim.ep.internal_states.MP, address, full_redraw, false)
+        // Statistics
+        var val = get_value(sim.ep.states["MEM_ACC"]);
+        set_value(sim.ep.states["MEM_ACC"], val + 1);
     },
     verbal: function(s_expr) {
         var verbal = "";
@@ -7282,6 +7289,9 @@ sim.ep.behaviors.MEM_WRITE = {
         var valref = main_memory_set(sim.ep.internal_states.MP, address, melto);
         sim.ep.signals[s_expr[4]].value = 1;
         show_main_memory(sim.ep.internal_states.MP, address, full_redraw, true)
+        // Statistics
+        var val = get_value(sim.ep.states["MEM_ACC"]);
+        set_value(sim.ep.states["MEM_ACC"], val + 1);
     },
     verbal: function(s_expr) {
         var verbal = "";
@@ -28146,10 +28156,48 @@ class ws_cpu extends ws_uielto {
         ref_obj = simhw_sim_state("ACC_TIME");
         vue_rebind_state(ref_obj, "#tms_context");
         ref_obj = simhw_sim_state("ACC_PWR");
-        vue_rebind_state(ref_obj, "#pwr_context")
+        vue_rebind_state(ref_obj, "#pwr_context");
+        ref_obj = simhw_sim_state('MEM_ACC');
+        vue_rebind_state(ref_obj, "#mem_context");
     }
-    render_populate_as_table() {
-        return "<div id='cpu_ALL' style='height:58vh; width: inherit; overflow-y: auto;' " + "     class='container container-fluid'>" + "<div class='col-12'>" + "<table class='table table-hover table-sm table-bordered'>" + " <tr>" + "<td align='center' class='w-50'>Instructions</td>" + "<td align='center' class='w-50'>" + "<div id='ins_context'>{{ value }}</div>" + "</td>" + " </tr>" + " <tr>" + "<td align='center' class='w-50'>CLK ticks</td>" + "<td align='center' class='w-50'>" + "<div id='clk_context'>{{ value }}</div>" + "</td>" + " </tr>" + " <tr>" + "<td align='center' class='w-50'>Accumulated msec.</td>" + "<td align='center' class='w-50'>" + "<div id='tms_context'>{{ value }}</div>" + "</td>" + " <tr>" + "<td align='center' class='w-50'>Accumulated energy</td>" + "<td align='center' class='w-50'>" + "<div id='pwr_context'>{{ value }}</div>" + "</td>" + " </tr>" + "</table>" + "</div>" + "</div>"
+    render_populate_as_table ( )
+    {
+     return "<div id='cpu_ALL' style='height:58vh; width: inherit; overflow-y: auto;' " +
+        "     class='container container-fluid'>" +
+            "<div class='col-12'>" +
+        "<table class='table table-hover table-sm table-bordered'>" +
+        " <tr>" +
+        "<td align='center' class='w-50'>Instructions</td>" +
+        "<td align='center' class='w-50'>" +
+        "<div id='ins_context'>{{ value }}</div>" +
+        "</td>" +
+        " </tr>" +
+        " <tr>" +
+        "<td align='center' class='w-50'>CLK ticks</td>" +
+        "<td align='center' class='w-50'>" +
+        "<div id='clk_context'>{{ value }}</div>" +
+        "</td>" +
+        " </tr>" +
+        " <tr>" +
+        "<td align='center' class='w-50'>Accumulated msec.</td>" +
+        "<td align='center' class='w-50'>" +
+        "<div id='tms_context'>{{ value }}</div>" +
+        "</td>" +
+        " <tr>" +
+        "<td align='center' class='w-50'>Accumulated energy</td>" +
+        "<td align='center' class='w-50'>" +
+        "<div id='pwr_context'>{{ value }}</div>" +
+        "</td>" +
+        " </tr>" +
+        " <tr>" +
+        "<td align='center' class='w-50'>Memory calls</td>" +
+        "<td align='center' class='w-50'>" +
+        "<div id='mem_context'>{{ value }}</div>" +
+        "</td>" +
+        " </tr>" +
+        "</table>" +
+        "</div>" +
+        "</div>" ;
     }
     render_populate_as_card() {
         return "<div class='container container-fluid'>" + "<div class='row justify-content-center'>" + "<div class='col-auto p-2'>" + "<div class='card bg-light'>" + " <h5 class='card-header text-center p-2'>" + "<span data-langkey='Instructions'>Instructions</span><br>" + " </h5>" + " <div class='card-body  text-center p-2'>" + " <p class='card-text'><div id='ins_context'>{{ value }}</div></p>" + " </div>" + "</div>" + "</div>" + "<div class='col-auto p-2'>" + "<div class='card bg-light'>" + " <h5 class='card-header text-center p-2'>" + "<span data-langkey='CLK ticks'>CLK ticks</span><br>" + " </h5>" + " <div class='card-body  text-center p-2'>" + " <p class='card-text'><div id='clk_context'>{{ value }}</div></p>" + " </div>" + "</div>" + "</div>" + "<div class='col-auto p-2'>" + "<div class='card bg-light'>" + " <h5 class='card-header text-center p-2'>" + "<span data-langkey='Accumulated msec.'>Accumulated msec.</span><br>" + " </h5>" + " <div class='card-body  text-center p-2'>" + " <p class='card-text'><div id='tms_context' class='text-truncate'>{{ value }}</div></p>" + " </div>" + "</div>" + "</div>" + "<div class='col-auto p-2'>" + "<div class='card bg-light'>" + " <h5 class='card-header text-center p-2'>" + "<span data-langkey='Accumulated energy'>Accumulated energy</span><br>" + " </h5>" + " <div class='card-body  text-center p-2'>" + " <p class='card-text'><div id='pwr_context' class='text-truncate'>{{ value }}</div></p>" + " </div>" + "</div>" + "</div>" + "</div>" + "</div>"
