@@ -2475,6 +2475,22 @@ function main_memory_get_baseaddr() {
     return all_baseaddr
 }
 
+function cache_memory_add_level(level){
+    var cur_level = {};
+    cur_level.id = level;
+    cur_level.line_size = 0;
+    cur_level.placement_policy = {};
+    cur_level.split_cache = false;
+    simhw_internalState_set("CACHE_MEMORY", level, cur_level);
+    console.log(simhw_internalState("CACHE_MEMORY"));
+}
+
+function cache_memory_set_attribute(level, attribute, value){
+    let cache_level = simhw_internalState_get("CACHE_MEMORY", level);
+    console.log(simhw_internalState_get("CACHE_MEMORY", level));
+    cache_level[attribute] = value;
+}
+
 function get_deco_from_pc(pc) {
     var mp_obj = simhw_internalState("MP");
     if (typeof mp_obj === "undefined" || typeof mp_obj[pc] === "undefined" || typeof mp_obj[pc].source === "undefined") {
@@ -7145,6 +7161,7 @@ sim.ep.states["MEM_ACC"] 	= { name:"MEM_ACC", verbal: "Veces que el código ha a
 sim.ep.internal_states.segments = {};
 sim.ep.internal_states.MP = {};
 sim.ep.internal_states.MP_wc = 0;
+sim.ep.internal_states.CACHE_MEMORY = {};
 sim.ep.signals.MRDY = {
     name: "MRDY",
     visible: true,
@@ -12847,6 +12864,7 @@ sim.poc.components.MEMORY = {
 };
 sim.poc.internal_states.segments = {};
 sim.poc.internal_states.MP = {};
+sim.poc.internal_states.CACHE_MEMORY = {};
 sim.poc.internal_states.MP_wc = 0;
 sim.poc.signals.MRDY = {
     name: "MRDY",
@@ -29181,6 +29199,72 @@ class ws_io_info extends ws_uielto {
 if (typeof window !== "undefined") {
     window.customElements.define("ws-io-info", ws_io_info)
 }
+
+// Cache config UI
+class ws_cache_config extends ws_uielto
+{
+  constructor ()
+  {
+    super();
+    var num_cache = 0;
+    var split_ins = false;
+  }
+
+  render ( event_name )
+    {
+      super.render() ;
+      this.render_skel() ;
+      this.render_populate() ;
+    }
+
+  render_skel ( )
+  {
+    // default content
+    this.innerHTML = '<div id="' + 'mem_cache_config_' + this.name_str + '" ' +
+                    'style="height:58vh; width:inherit; overflow-y:auto;"></div>' ;
+  }
+
+  render_populate ( )
+  {
+    var o1 = "";
+    var cache_levels = 3;
+    var div_hash = "#mem_cache_config_" + this.name_str;
+    o1 += '<div class="container container-fluid">' + '<div class="column">';
+    o1 += '<div class="col border mt-1 justify-content-end"><button type="button" class="btn btn-secondary m-1">-</button><button type="button" class="btn btn-secondary m-1">+</button></div>';
+    if (simhw_internalState("CACHE_MEMORY") != undefined){
+        simhw_internalState_reset("CACHE_MEMORY", {});
+      }
+    for (var i = 1; i <= 3; i++){
+      let cache_level = i.toString()
+      cache_memory_add_level(i);
+      o1 += '<div class="col border mt-1" id="#mem_cache_config_L'+ cache_level + '"><p class="p-2 bg-light">Cache L' + cache_level + '</p><table class="table table-bordered"><tbody>' +
+      '<tr><td>Line Size (Bytes)</td><td><input type="number" min:0 class="cache_memory_line_size" onclick="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
+      '<tr><td>Placement policy</td><td><div class="form-group"><select class="form-control" id="#cache_L' + cache_level + '_policy" onclick="cache_config_change(this, ' + cache_level + ')"><option>Direct Mapped</option><option>Fully-associative</option><option>Set-associative</option></select></div></td></tr>';
+      
+      if (i == 1){
+        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input" value="" onclick="cache_config_change(this, ' + cache_level + ')">Data + instructions</label></div></td></tr>';
+      }
+
+      o1 += '</tbody></table></div>'
+    }
+    // Insertar código de cajitas de opciones de caché
+    o1 += '</div></div>'
+    $(div_hash).html(o1);
+  }
+}
+
+function cache_config_change(obj, level){
+    console.log(obj);
+    if ($(obj).hasClass("cache_memory_line_size")){
+        cache_memory_set_attribute(level, "line_size", obj.value);
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.customElements.define('ws-memory-cache-config', ws_cache_config);
+}
+
+
 class ws_io_config extends ws_uielto {
     constructor() {
         super()
@@ -30788,7 +30872,7 @@ class ws_ddown_sel extends ws_uielto {
         this.devices = ["CPU", "Main Memory", "Devices", "Simulation"];
         this.details = {
             CPU: ["all", "mc", "cpu"],
-            "Main Memory": ["mp", "mpcfg"],
+            "Main Memory": ["mp", "mpcfg", "mpch"],
             Devices: ["con", "io", "iocfg", "iol3d", "ioldm"],
             Simulation: ["ed_mc", "ed_mp"]
         };
@@ -30798,6 +30882,7 @@ class ws_ddown_sel extends ws_uielto {
             cpu: ' <a class="dropdown-item" href="#" id="s5b_17" value="17"' + "\t onclick=\"wsweb_set_details('CPU_STATS');" + '\t\t  return false;"><span class="bg-dark text-white">CPU</span>&nbsp;<span data-langkey=\'Stats\'>Stats</span></a>',
             mp: ' <a class="dropdown-item" href="#" id="s5b_14" value="14"' + "\t onclick=\"wsweb_set_details('MEMORY');" + '\t\t  return false;"><span class="bg-dark text-white">MM</span>&nbsp;<span data-langkey=\'Memory\'>Memory</span></a>',
             mpcfg: '      <a class="dropdown-item" href="#" id="s5b_18" value="18"' + "\t onclick=\"wsweb_set_details('MEMORY_CONFIG');" + '\t\t  return false;"><span class="bg-dark text-white">MM</span>&nbsp;<span data-langkey=\'Configuration\'>Configuration</span></a>',
+            mpch: '     <a class="dropdown-item" href="#" id="s5b_28" value="28"' + "\t onclick=\"wsweb_set_details('MEMORY_CACHE');" + '\t\t  return false;"><span class="bg-dark text-white">MM</span>&nbsp;<span data-langkey=\'Cache-Configuration\'>Cache Configuration</span></a>',
             con: '      <a class="dropdown-item" href="#" id="s5b_12" value="12"' + "\t onclick=\"wsweb_set_details('SCREEN');" + '\t\t  return false;"><span class="bg-dark text-white">Dev</span>&nbsp;<span data-langkey=\'Keyboard+Display\'>Keyboard+Display</span></a>',
             io: '      <a class="dropdown-item" href="#" id="s5b_15" value="15"' + "\t onclick=\"wsweb_set_details('IO_STATS');" + '\t\t  return false;"><span class="bg-dark text-white">Dev</span>&nbsp;<span data-langkey=\'I/O Stats\'>I/O Stats</span></a>',
             iocfg: '      <a class="dropdown-item" href="#" id="s5b_19" value="19"' + "\t onclick=\"wsweb_set_details('IO_CONFIG');" + '\t\t  return false;"><span class="bg-dark text-white">Dev</span>&nbsp;<span data-langkey=\'I/O Configuration\'>I/O Configuration</span></a>',
@@ -30867,6 +30952,7 @@ class ws_ddown_info extends ws_uielto {
         ni.ioldm = this.mk_nav_item("tab27", "#ioldm", "Led Matrix", "", "");
         ni.ed_mc = this.mk_nav_item("tab20", "#ed_mc", "MicroCode", "", "");
         ni.ed_mp = this.mk_nav_item("tab21", "#ed_mp", "Assembly", "", "user_microcode");
+        ni.mpch = this.mk_nav_item("tab28", "#mpch", "Cache configuration", "", "");
         return ni
     }
     mk_nav_tabpane_item(n_id, n_dclass, n_content) {
@@ -30886,6 +30972,7 @@ class ws_ddown_info extends ws_uielto {
         np.ioldm = this.mk_nav_tabpane_item("ioldm", "", '<ws-ledm id="ldm1"></ws-ledm>');
         np.ed_mc = this.mk_nav_tabpane_item("ed_mc", "", '<ws-edit-mc layout="compilebar,placeholder"></ws_edit_mc>');
         np.ed_mp = this.mk_nav_tabpane_item("ed_mp", "", '<ws-edit-as layout="compilebar,placeholder"></ws_edit_as>');
+        np.mpch = this.mk_nav_tabpane_item("mpch", "", '<ws-memory-cache-config></ws-memory-cache-config>');
         return np
     }
 }
@@ -30944,7 +31031,7 @@ class ws_simmicasm extends ws_uielto {
         super()
     }
     render(event_name) {
-        var o1 = "\x3c!-- Nav tabs --\x3e" + "<nav>" + '  <div class="nav nav-tabs nav-justified nav-tabs" id="nav-tab" role="tablist">' + '    <a class="nav-item nav-link active" id="nav-simulation-tab"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       data-bs-toggle="tab" href="#nav-simulation" role="tab"' + '       aria-controls="nav-home" aria-selected="true">' + '<span class="d-none d-sm-inline-flex" data-langkey="Simulation">Simulation</span><span class="d-sm-none">Sim.</span></a>' + '    <a class="nav-item nav-link user_microcode"    id="nav-microcode-tab" data-oldid="s5b_20"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       onclick="setTimeout(function(){ inputfirm.refresh(); }, 200) ;' + '                return false;"' + '       data-bs-toggle="tab" href="#nav-microcode" role="tab"' + '       aria-controls="nav-profile" aria-selected="false">' + '<span class="d-none d-sm-inline-flex" data-langkey="MicroCode">MicroCode</span><span class="d-sm-none">&#181;code</span></a>' + '    <a class="nav-item nav-link"        id="nav-assembly-tab"  data-oldid="s5b_21"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       onclick="setTimeout(function(){ inputasm.refresh(); }, 200) ;' + '                return false;"' + '       data-bs-toggle="tab" href="#nav-assembly" role="tab"' + '       aria-controls="nav-contact" aria-selected="false">' + '<span class="d-none d-sm-inline-flex" data-langkey="Assembly">Assembly</span><span class="d-sm-none">Asm.</span></a>' + "  </div>" + "</nav>" + "" + '<div class="tab-content p-1" id="nav-tabContent">' + '  <div class="tab-pane fade show active" id="nav-simulation" role="tabpanel" aria-labelledby="nav-simulation-tab">' + "" + '    <div class="px-1 pt-1">' + '    <ws-executionbar name="exebar1" class="btn-toolbar btn-block"' + '\t\t           components="btn_reset,btn_emins,btn_eins,btn_run"' + '\t\t           icons="up" role="toolbar"></ws-executionbar>' + "    </div>" + "" + '    <div class="px-1 pt-1">' + '    <div class="btn-toolbar btn-block" role="toolbar">' + '    <ws-ddown-sel class="col btn-group p-0" style="flex-grow:6;"' + '    \t        components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm"></ws-ddown-sel>' + "    </div>" + "    </div>" + "" + '    <ws-ddown-info components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm"></ws-ddown-info>' + "  </div>" + "" + '  <div class="tab-pane fade user_microcode" id="nav-microcode" role="tabpanel" ' + '       aria-labelledby="nav-microcode-tab">' + '       <ws-edit-mc layout="compilebar,editor"></ws-edit-mc>' + "  </div>" + "" + '  <div class="tab-pane fade" id="nav-assembly" role="tabpanel" ' + '       aria-labelledby="nav-assembly-tab">' + '       <ws-edit-as layout="compilebar,editor"></ws-edit-as>' + "  </div>" + "" + "  </div>" + "</div>";
+        var o1 = "\x3c!-- Nav tabs --\x3e" + "<nav>" + '  <div class="nav nav-tabs nav-justified nav-tabs" id="nav-tab" role="tablist">' + '    <a class="nav-item nav-link active" id="nav-simulation-tab"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       data-bs-toggle="tab" href="#nav-simulation" role="tab"' + '       aria-controls="nav-home" aria-selected="true">' + '<span class="d-none d-sm-inline-flex" data-langkey="Simulation">Simulation</span><span class="d-sm-none">Sim.</span></a>' + '    <a class="nav-item nav-link user_microcode"    id="nav-microcode-tab" data-oldid="s5b_20"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       onclick="setTimeout(function(){ inputfirm.refresh(); }, 200) ;' + '                return false;"' + '       data-bs-toggle="tab" href="#nav-microcode" role="tab"' + '       aria-controls="nav-profile" aria-selected="false">' + '<span class="d-none d-sm-inline-flex" data-langkey="MicroCode">MicroCode</span><span class="d-sm-none">&#181;code</span></a>' + '    <a class="nav-item nav-link"        id="nav-assembly-tab"  data-oldid="s5b_21"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       onclick="setTimeout(function(){ inputasm.refresh(); }, 200) ;' + '                return false;"' + '       data-bs-toggle="tab" href="#nav-assembly" role="tab"' + '       aria-controls="nav-contact" aria-selected="false">' + '<span class="d-none d-sm-inline-flex" data-langkey="Assembly">Assembly</span><span class="d-sm-none">Asm.</span></a>' + "  </div>" + "</nav>" + "" + '<div class="tab-content p-1" id="nav-tabContent">' + '  <div class="tab-pane fade show active" id="nav-simulation" role="tabpanel" aria-labelledby="nav-simulation-tab">' + "" + '    <div class="px-1 pt-1">' + '    <ws-executionbar name="exebar1" class="btn-toolbar btn-block"' + '\t\t           components="btn_reset,btn_emins,btn_eins,btn_run"' + '\t\t           icons="up" role="toolbar"></ws-executionbar>' + "    </div>" + "" + '    <div class="px-1 pt-1">' + '    <div class="btn-toolbar btn-block" role="toolbar">' + '    <ws-ddown-sel class="col btn-group p-0" style="flex-grow:6;"' + '    \t        components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,mpch"></ws-ddown-sel>' + "    </div>" + "    </div>" + "" + '    <ws-ddown-info components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,mpch"></ws-ddown-info>' + "  </div>" + "" + '  <div class="tab-pane fade user_microcode" id="nav-microcode" role="tabpanel" ' + '       aria-labelledby="nav-microcode-tab">' + '       <ws-edit-mc layout="compilebar,editor"></ws-edit-mc>' + "  </div>" + "" + '  <div class="tab-pane fade" id="nav-assembly" role="tabpanel" ' + '       aria-labelledby="nav-assembly-tab">' + '       <ws-edit-as layout="compilebar,editor"></ws-edit-as>' + "  </div>" + "" + "  </div>" + "</div>";
         this.innerHTML = o1
     }
 }
@@ -32872,7 +32959,7 @@ class ws_uiscreen_classic extends ws_uielto {
         return o1
     }
     render_populate_classic_details() {
-        var o1 = '    <div class="row ps-2 pe-3">' + '\t <ws-executionbar name="exebar1" class="btn-toolbar btn-block"' + '\t\t\t  components="btn_reset,btn_emins,btn_eins,btn_run"' + '\t\t\t  icons="up" role="toolbar"></ws-executionbar>' + "\t </div>" + "" + '\t <div class="row ps-2 pe-3 pt-1">' + '\t <div class="btn-toolbar btn-block" role="toolbar">' + '\t      <button class="btn btn-light shadow-sm col py-0 mx-1"' + '\t\t      style="border-color: #BBBBBB; flex-grow:1;"' + '\t\t      data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-html="true"' + "\t\t      title=\"This button opens the 'state management' dialog: it shows the current state, saves the current state, and shows the differences between two states.\"" + "\t\t      onclick=\"wsweb_dialog_open('state');" + '\t\t\t       return false;">' + '<em class="fas fa-camera"></em>' + "&nbsp;" + '<span data-langkey="States">States</span></button>' + '\t      <ws-ddown-sel class="col btn-group p-0 mx-1" style="flex-grow:2;"' + '                       components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,ed_mc,ed_mp"></ws-ddown-sel>' + "\t </div>" + "\t </div>" + "" + '\t <ws-ddown-info components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,ed_mc,ed_mp"></ws-ddown-info>' + "";
+        var o1 = '    <div class="row ps-2 pe-3">' + '\t <ws-executionbar name="exebar1" class="btn-toolbar btn-block"' + '\t\t\t  components="btn_reset,btn_emins,btn_eins,btn_run"' + '\t\t\t  icons="up" role="toolbar"></ws-executionbar>' + "\t </div>" + "" + '\t <div class="row ps-2 pe-3 pt-1">' + '\t <div class="btn-toolbar btn-block" role="toolbar">' + '\t      <button class="btn btn-light shadow-sm col py-0 mx-1"' + '\t\t      style="border-color: #BBBBBB; flex-grow:1;"' + '\t\t      data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-html="true"' + "\t\t      title=\"This button opens the 'state management' dialog: it shows the current state, saves the current state, and shows the differences between two states.\"" + "\t\t      onclick=\"wsweb_dialog_open('state');" + '\t\t\t       return false;">' + '<em class="fas fa-camera"></em>' + "&nbsp;" + '<span data-langkey="States">States</span></button>' + '\t      <ws-ddown-sel class="col btn-group p-0 mx-1" style="flex-grow:2;"' + '                       components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,ed_mc,ed_mp,mpch"></ws-ddown-sel>' + "\t </div>" + "\t </div>" + "" + '\t <ws-ddown-info components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,ed_mc,ed_mp,mpch"></ws-ddown-info>' + "";
         return o1
     }
     screen_asm() {
@@ -33264,6 +33351,10 @@ var hash_detail2action = {
     },
     SCREEN: function() {
         wsweb_set_details_select(12);
+        show_memories_values()
+    },
+    MEMORY_CACHE: function(){
+        wsweb_set_details_select(28);
         show_memories_values()
     },
     IO_STATS: function() {
