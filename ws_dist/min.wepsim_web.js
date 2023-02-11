@@ -1041,6 +1041,7 @@ function update_memories(preSIMWARE) {
     }
     show_main_memory(mp_obj, 0, true, true);
     show_control_memory(mc_obj, 0, true)
+    simhw_internalState_reset("CACHE_MEMORY", {});
 }
 
 function hex2float(hexvalue) {
@@ -2475,20 +2476,71 @@ function main_memory_get_baseaddr() {
     return all_baseaddr
 }
 
+function cache_memory_placement_policy_attr(type){
+    var attr;
+    switch (type){
+        case "Direct Mapped":
+            attr = {
+                "type" : type,
+                "tag_size" : 0,
+                "index_size" : 0,
+                "offset_size" : 0,
+            }
+            break;
+        case "Fully-associative":
+            attr = {
+                "type" : type,
+                "tag_size" : 0,
+                "offset_size" : 0
+            }
+            break;
+        case "Set-associative":
+            attr = {
+                "type" : type,
+                "tag_size" : 0,
+                "set_size" : 0,
+                "offset_size" : 0,
+                "num_ways" : 0
+            }
+            break;
+        default:
+            attr = {"type" : "Unknown"};
+    }
+    return attr;
+}
+
 function cache_memory_add_level(level){
-    var cur_level = {};
+    var cur_cache = simhw_internalState("CACHE_MEMORY");
+    cur_cache[level] = {};
+    var cur_level = cur_cache[level];
     cur_level.id = level;
     cur_level.line_size = 0;
-    cur_level.placement_policy = {};
+    cur_level.size = 0;
+    cur_level.num_lines = 0;
+    cur_level.placement_policy = cache_memory_placement_policy_attr("Direct Mapped");
     cur_level.split_cache = false;
-    simhw_internalState_set("CACHE_MEMORY", level, cur_level);
-    console.log(simhw_internalState("CACHE_MEMORY"));
+    cur_level.hits = 0;
+    cur_level.misses = 0;
+    cur_level.total_access = 0;
+    cur_level.data = (cur_level.split_cache ? {"data" : {}, "instructions" : {}} : {});
+    console.log(cur_cache);
+    simhw_internalState_reset("CACHE_MEMORY", cur_cache);
+}
+
+function cache_memory_erase_level(level){
+    var cur_cache = simhw_internalState("CACHE_MEMORY");
+    delete cur_cache[level];
+    simhw_internalState_reset("CACHE_MEMORY", cur_cache);
 }
 
 function cache_memory_set_attribute(level, attribute, value){
-    let cache_level = simhw_internalState_get("CACHE_MEMORY", level);
-    console.log(simhw_internalState_get("CACHE_MEMORY", level));
-    cache_level[attribute] = value;
+    var cache_level = simhw_internalState("CACHE_MEMORY");
+    cache_level[level][attribute] = value;
+}
+
+function cache_memory_policy_set_attribute(level, attribute, value){
+    var cache_level = simhw_internalState("CACHE_MEMORY");
+    cache_level[level]["placement_policy"][attribute] = value;
 }
 
 function get_deco_from_pc(pc) {
@@ -29220,29 +29272,46 @@ class ws_cache_config extends ws_uielto
   render_skel ( )
   {
     // default content
-    this.innerHTML = '<div id="' + 'mem_cache_config_' + this.name_str + '" ' +
+    this.innerHTML = '<div id="' + 'mem_cache_config' + '" ' +
                     'style="height:58vh; width:inherit; overflow-y:auto;"></div>' ;
   }
 
   render_populate ( )
   {
+    if (simhw_active() === null) {
+        $(div_hash).html('');
+        return
+    }
+    cache_config_build_ui();
+  }
+}
+
+var cache_levels = 0;
+function cache_config_build_ui(){
+    var div_hash = "#mem_cache_config";
     var o1 = "";
-    var cache_levels = 3;
-    var div_hash = "#mem_cache_config_" + this.name_str;
     o1 += '<div class="container container-fluid">' + '<div class="column">';
-    o1 += '<div class="col border mt-1 justify-content-end"><button type="button" class="btn btn-secondary m-1">-</button><button type="button" class="btn btn-secondary m-1">+</button></div>';
-    if (simhw_internalState("CACHE_MEMORY") != undefined){
-        simhw_internalState_reset("CACHE_MEMORY", {});
-      }
-    for (var i = 1; i <= 3; i++){
+    o1 += '<div class="col border mt-1 justify-content-end">'
+    o1 += '<button type="button" class="btn btn-secondary m-1" onclick="cache_config_decrease_level()" ' + (cache_levels > 0 ? '' : 'disabled') +  '>-</button>';
+    o1 += '<button type="button" class="btn btn-secondary m-1" onclick="cache_config_add_level()" ' + (cache_levels < 3 ? '' : 'disabled') + '>+</button>';
+    o1 += '</div>';
+    if (typeof simhw_internalState("CACHE_MEMORY") == "undefined"){
+        return
+    }
+    for (var i = 1; i <= cache_levels; i++){
       let cache_level = i.toString()
-      cache_memory_add_level(i);
+      let cache_data = simhw_internalState_get("CACHE_MEMORY", i);
       o1 += '<div class="col border mt-1" id="#mem_cache_config_L'+ cache_level + '"><p class="p-2 bg-light">Cache L' + cache_level + '</p><table class="table table-bordered"><tbody>' +
-      '<tr><td>Line Size (Bytes)</td><td><input type="number" min:0 class="cache_memory_line_size" onclick="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
-      '<tr><td>Placement policy</td><td><div class="form-group"><select class="form-control" id="#cache_L' + cache_level + '_policy" onclick="cache_config_change(this, ' + cache_level + ')"><option>Direct Mapped</option><option>Fully-associative</option><option>Set-associative</option></select></div></td></tr>';
-      
+      '<tr><td>Line Size (Bytes)</td><td><input type="number" min:0 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
+      '<tr><td>Placement policy</td><td><div class="form-group"><select class="form-control cache_memory_placement_policy" id="#cache_L' + cache_level + '_policy" value=' + cache_data["placement_policy"].type + ' onchange="cache_config_change(this, ' + cache_level + ')">' +
+      '<option value="Direct Mapped" ' + (cache_data["placement_policy"].type.localeCompare("Direct Mapped") == 0 ? 'selected' : '') + ' >Direct Mapped</option>'+
+      '<option value="Fully-associative" ' + (cache_data["placement_policy"].type.localeCompare("Fully-associative") == 0 ? 'selected' : '') + ' >Fully-associative</option>' +
+      '<option value="Set-associative" ' + (cache_data["placement_policy"].type.localeCompare("Set-associative") == 0 ? 'selected' : '') + ' >Set-associative</option></select></div></td></tr>';
+      if (cache_data["placement_policy"].type.localeCompare("Set-associative") == 0){
+        o1 += '<tr><td>Number of ways</td><td><input type="number" min:0 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>';
+      }
       if (i == 1){
-        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input" value="" onclick="cache_config_change(this, ' + cache_level + ')">Data + instructions</label></div></td></tr>';
+        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input cache_memory_split_instruction"' + (cache_data["split_cache"] == true ? 'checked' : '') + ' onchange="cache_config_change(this, ' + cache_level + ')">Data + instructions</label></div></td></tr>';
       }
 
       o1 += '</tbody></table></div>'
@@ -29250,13 +29319,39 @@ class ws_cache_config extends ws_uielto
     // Insertar código de cajitas de opciones de caché
     o1 += '</div></div>'
     $(div_hash).html(o1);
-  }
+}
+
+function cache_config_add_level(){
+    if (cache_levels + 1 > 3){
+        return
+    }
+    cache_levels++;
+    cache_memory_add_level(cache_levels);
+    cache_config_build_ui();
+}
+
+function cache_config_decrease_level(){
+    if (cache_levels - 1 < 0){
+        return
+    }
+    cache_memory_erase_level(cache_levels);
+    cache_levels--;
+    cache_config_build_ui();   
 }
 
 function cache_config_change(obj, level){
-    console.log(obj);
     if ($(obj).hasClass("cache_memory_line_size")){
-        cache_memory_set_attribute(level, "line_size", obj.value);
+        cache_memory_set_attribute(level, "line_size", parseInt(obj.value));
+    }
+    else if($(obj).hasClass("cache_memory_placement_policy")){
+        cache_memory_set_attribute(level, "placement_policy", cache_memory_placement_policy_attr(obj.value));
+        cache_config_build_ui();
+    }
+    else if($(obj).hasClass("cache_memory_policy_num_ways")){
+        cache_memory_policy_set_attribute(level, "num_ways", parseInt(obj.value));
+    }
+    else if($(obj).hasClass("cache_memory_split_instruction")){
+        cache_memory_set_attribute(level, "split_cache", obj.checked);
     }
 }
 
