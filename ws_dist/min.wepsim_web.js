@@ -2509,6 +2509,23 @@ function cache_memory_placement_policy_attr(type){
     return attr;
 }
 
+function cache_memory_replacement_policy_attr(type){
+    var attr;
+    switch (type){
+        case "LFU":
+            attr = {
+                "type" : "LFU"
+            }
+            break;
+        case "FIFO":
+            attr = {
+                "type" : "FIFO"
+            }
+            break;
+    }
+    return attr;
+}
+
 function cache_memory_add_level(level){
     var cur_cache = simhw_internalState("CACHE_MEMORY");
     cur_cache[level] = {};
@@ -2518,6 +2535,7 @@ function cache_memory_add_level(level){
     cur_level.size = 0;
     cur_level.num_lines = 0;
     cur_level.placement_policy = cache_memory_placement_policy_attr("Direct Mapped");
+    cur_level.replacement_policy = cache_memory_replacement_policy_attr("LFU");
     cur_level.split_cache = false;
     cur_level.hits = 0;
     cur_level.misses = 0;
@@ -2541,6 +2559,11 @@ function cache_memory_set_attribute(level, attribute, value){
 function cache_memory_policy_set_attribute(level, attribute, value){
     var cache_level = simhw_internalState("CACHE_MEMORY");
     cache_level[level]["placement_policy"][attribute] = value;
+}
+
+function cache_memory_replacement_policy_set_attribute(level, attribute, value){
+    var cache_level = simhw_internalState("CACHE_MEMORY");
+    cache_level[level]["replacement_policy"][attribute] = value;
 }
 
 function get_deco_from_pc(pc) {
@@ -29302,19 +29325,35 @@ function cache_config_build_ui(){
       let cache_level = i.toString()
       let cache_data = simhw_internalState_get("CACHE_MEMORY", i);
       o1 += '<div class="col border mt-1" id="#mem_cache_config_L'+ cache_level + '"><p class="p-2 bg-light">Cache L' + cache_level + '</p><table class="table table-bordered"><tbody>' +
+      '<tr><td>Cache size (KB)</td><td><input type="number" min:0 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
       '<tr><td>Line Size (Bytes)</td><td><input type="number" min:0 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
+      '<tr><td>Replacement policy</td><td><div class="form-group"><select class="form-control cache_memory_replacement_policy" id="#cache_L' + cache_level + '_replacement_policy" value=' + cache_data["replacement_policy"].type + ' onchange="cache_config_change(this, ' + cache_level + ')">' +
+      '<option value="LFU" ' + (cache_data["replacement_policy"].type.localeCompare("LFU") == 0 ? 'selected' : '') + ' >LFU</option>' +
+      '<option value="FIFO" ' + (cache_data["replacement_policy"].type.localeCompare("FIFO") == 0 ? 'selected' : '') + '>FIFO</option>' + 
       '<tr><td>Placement policy</td><td><div class="form-group"><select class="form-control cache_memory_placement_policy" id="#cache_L' + cache_level + '_policy" value=' + cache_data["placement_policy"].type + ' onchange="cache_config_change(this, ' + cache_level + ')">' +
       '<option value="Direct Mapped" ' + (cache_data["placement_policy"].type.localeCompare("Direct Mapped") == 0 ? 'selected' : '') + ' >Direct Mapped</option>'+
       '<option value="Fully-associative" ' + (cache_data["placement_policy"].type.localeCompare("Fully-associative") == 0 ? 'selected' : '') + ' >Fully-associative</option>' +
-      '<option value="Set-associative" ' + (cache_data["placement_policy"].type.localeCompare("Set-associative") == 0 ? 'selected' : '') + ' >Set-associative</option></select></div></td></tr>';
-      if (cache_data["placement_policy"].type.localeCompare("Set-associative") == 0){
-        o1 += '<tr><td>Number of ways</td><td><input type="number" min:0 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>';
+      '<option value="Set-associative" ' + (cache_data["placement_policy"].type.localeCompare("Set-associative") == 0 ? 'selected' : '') + ' >Set-associative</option></select></div></td></tr>' +
+      '<tr><td colspan="2">';
+      if (cache_data["placement_policy"].type === "Direct Mapped"){
+        o1 += '<div class="row w-80 h-90 mx-auto"><div class="row"><div class="col text-center border border-dark w-25">tag: ' + cache_data["placement_policy"].tag_size + '</div>' +
+        '<div class="col text-center border border-dark w-25">index: ' + cache_data["placement_policy"].index_size + '</div>' +
+        '<div class="col text-center border border-dark w-50">offset: ' + cache_data["placement_policy"].offset_size + '</div></div></div></td></tr>';
+      }
+      else if (cache_data["placement_policy"].type === "Fully-associative"){
+        o1 += '<div class="row w-80 h-90 mx-auto"><div class="row"><div class="col text-center border border-dark">tag: ' + cache_data["placement_policy"].tag_size + '</div>' +
+        '<div class="col text-center border border-dark">offset: ' + cache_data["placement_policy"].offset_size + '</div></div></div></td></tr>';
+      }
+      else if (cache_data["placement_policy"].type === "Set-associative"){
+        o1 += '<div class="row w-80 h-90 mx-auto"><div class="row"><div class="col text-center border border-dark w-25">tag: ' + cache_data["placement_policy"].tag_size + '</div>' +
+        '<div class="col text-center border border-dark w-25">set: ' + cache_data["placement_policy"].set_size + '</div>' +
+        '<div class="col text-center border border-dark w-50">offset: ' + cache_data["placement_policy"].offset_size + '</div></div></div>'
+        o1 += '</td></tr><tr><td>Number of ways</td><td><input type="number" min:0 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>';
       }
       if (i == 1){
-        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input cache_memory_split_instruction"' + (cache_data["split_cache"] == true ? 'checked' : '') + ' onchange="cache_config_change(this, ' + cache_level + ')">Data + instructions</label></div></td></tr>';
+        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input cache_memory_split_instruction"' + (cache_data["split_cache"] == true ? 'checked' : '') + ' onchange="cache_config_change(this, ' + cache_level + ')">Split data and instructions</label></div></td></tr>';
       }
-
-      o1 += '</tbody></table></div>'
+      o1 += '</tbody></table></div>';
     }
     // Insertar código de cajitas de opciones de caché
     o1 += '</div></div>'
@@ -29345,7 +29384,9 @@ function cache_config_change(obj, level){
     }
     else if($(obj).hasClass("cache_memory_placement_policy")){
         cache_memory_set_attribute(level, "placement_policy", cache_memory_placement_policy_attr(obj.value));
-        cache_config_build_ui();
+    }
+    else if($(obj).hasClass("cache_memory_replacement_policy")){
+        cache_memory_set_attribute(level, "replacement_policy", cache_memory_replacement_policy_attr(obj.value));
     }
     else if($(obj).hasClass("cache_memory_policy_num_ways")){
         cache_memory_policy_set_attribute(level, "num_ways", parseInt(obj.value));
@@ -29353,6 +29394,34 @@ function cache_config_change(obj, level){
     else if($(obj).hasClass("cache_memory_split_instruction")){
         cache_memory_set_attribute(level, "split_cache", obj.checked);
     }
+    else if($(obj).hasClass("cache_memory_size")){
+        cache_memory_set_attribute(level, "cache_size", parseInt(obj.value));
+    }
+    var cache_level = simhw_internalState_get("CACHE_MEMORY", level);
+    switch (cache_level["placement_policy"].type){
+        case "Direct Mapped":
+            var offset_size = Math.ceil(Math.log2(cache_level["line_size"]));
+            cache_memory_policy_set_attribute(level, "offset_size", offset_size);
+            var num_sets = Math.round((cache_level["cache_size"]*(1024))/(cache_level["line_size"]*8));
+            var index_size = Math.ceil(Math.log2(num_sets));
+            cache_memory_policy_set_attribute(level, "index_size", index_size);
+            cache_memory_policy_set_attribute(level, "tag_size", 32 - offset_size - index_size);
+            break;
+        case "Fully-associative":
+            var offset_size = Math.ceil(Math.log2(cache_level["line_size"]));
+            cache_memory_policy_set_attribute(level, "offset_size", offset_size);
+            cache_memory_policy_set_attribute(level, "tag_size", 32 - offset_size);
+            break;
+        case "Set-associative":
+            var offset_size = Math.ceil(Math.log2(cache_level["line_size"]));
+            cache_memory_policy_set_attribute(level, "offset_size", offset_size);
+            var num_sets = Math.round((cache_level["cache_size"]*1024)/(cache_level["line_size"]*8*cache_level["placement_policy"]["num_ways"]));
+            var index_size = Math.ceil(Math.log2(num_sets));
+            cache_memory_policy_set_attribute(level, "set_size", index_size);
+            cache_memory_policy_set_attribute(level, "tag_size", 32 - offset_size - index_size);
+            break;
+    }
+    cache_config_build_ui();
 }
 
 if (typeof window !== "undefined") {
