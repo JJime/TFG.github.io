@@ -2531,8 +2531,8 @@ function cache_memory_add_level(level){
     cur_cache[level] = {};
     var cur_level = cur_cache[level];
     cur_level.id = level;
-    cur_level.line_size = 0;
-    cur_level.size = 0;
+    cur_level.line_size = 1;
+    cur_level.cache_size = 1;
     cur_level.num_lines = 0;
     cur_level.placement_policy = cache_memory_placement_policy_attr("Direct Mapped");
     cur_level.replacement_policy = cache_memory_replacement_policy_attr("LFU");
@@ -29275,6 +29275,39 @@ if (typeof window !== "undefined") {
     window.customElements.define("ws-io-info", ws_io_info)
 }
 
+class ws_memory_cache extends ws_uielto
+{
+    constructor()
+    {
+        super();
+    }
+
+    render (event_name)
+    {
+        super.render();
+        this.render_skel();
+        this.render_populate();
+    }
+
+    render_skel()
+    {
+        this.innerHTML = '<div id="' + 'mem_cache_config' + '" ' +
+            'style="height:58vh; width:inherit; overflow-y:auto;"></div>' ; 
+    }
+
+    render_populate ( )
+    {
+      if (simhw_active() === null) {
+          $(div_hash).html('');
+          return
+      }
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.customElements.define('ws-memory-cache', ws_memory_cache);
+}
+
 // Cache config UI
 class ws_cache_config extends ws_uielto
 {
@@ -29325,8 +29358,8 @@ function cache_config_build_ui(){
       let cache_level = i.toString()
       let cache_data = simhw_internalState_get("CACHE_MEMORY", i);
       o1 += '<div class="col border mt-1" id="#mem_cache_config_L'+ cache_level + '"><p class="p-2 bg-light">Cache L' + cache_level + '</p><table class="table table-bordered"><tbody>' +
-      '<tr><td>Cache size (KB)</td><td><input type="number" min:0 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
-      '<tr><td>Line Size (Bytes)</td><td><input type="number" min:0 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
+      '<tr><td>Cache size (KB)</td><td><input type="number" min:1 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
+      '<tr><td>Line Size (Bytes)</td><td><input type="number" min:1 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
       '<tr><td>Replacement policy</td><td><div class="form-group"><select class="form-control cache_memory_replacement_policy" id="#cache_L' + cache_level + '_replacement_policy" value=' + cache_data["replacement_policy"].type + ' onchange="cache_config_change(this, ' + cache_level + ')">' +
       '<option value="LFU" ' + (cache_data["replacement_policy"].type.localeCompare("LFU") == 0 ? 'selected' : '') + ' >LFU</option>' +
       '<option value="FIFO" ' + (cache_data["replacement_policy"].type.localeCompare("FIFO") == 0 ? 'selected' : '') + '>FIFO</option>' + 
@@ -29348,7 +29381,7 @@ function cache_config_build_ui(){
         o1 += '<div class="row w-80 h-90 mx-auto"><div class="row"><div class="col text-center border border-dark w-25">tag: ' + cache_data["placement_policy"].tag_size + '</div>' +
         '<div class="col text-center border border-dark w-25">set: ' + cache_data["placement_policy"].set_size + '</div>' +
         '<div class="col text-center border border-dark w-50">offset: ' + cache_data["placement_policy"].offset_size + '</div></div></div>'
-        o1 += '</td></tr><tr><td>Number of ways</td><td><input type="number" min:0 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>';
+        o1 += '</td></tr><tr><td>Number of ways</td><td><input type="number" min:1 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>';
       }
       if (i == 1){
         o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input cache_memory_split_instruction"' + (cache_data["split_cache"] == true ? 'checked' : '') + ' onchange="cache_config_change(this, ' + cache_level + ')">Split data and instructions</label></div></td></tr>';
@@ -29398,17 +29431,19 @@ function cache_config_change(obj, level){
         cache_memory_set_attribute(level, "cache_size", parseInt(obj.value));
     }
     var cache_level = simhw_internalState_get("CACHE_MEMORY", level);
+    var num_lines = Math.round((cache_level["cache_size"]*(1024))/(cache_level["line_size"]*8));
+    cache_memory_set_attribute(level, "num_lines", num_lines);
     switch (cache_level["placement_policy"].type){
         case "Direct Mapped":
             var offset_size = Math.ceil(Math.log2(cache_level["line_size"]));
             cache_memory_policy_set_attribute(level, "offset_size", offset_size);
-            var num_sets = Math.round((cache_level["cache_size"]*(1024))/(cache_level["line_size"]*8));
-            var index_size = Math.ceil(Math.log2(num_sets));
+            var index_size = Math.ceil(Math.log2(num_lines));
             cache_memory_policy_set_attribute(level, "index_size", index_size);
             cache_memory_policy_set_attribute(level, "tag_size", 32 - offset_size - index_size);
             break;
         case "Fully-associative":
             var offset_size = Math.ceil(Math.log2(cache_level["line_size"]));
+            cache_memory_set_attribute(level, "num_lines", )
             cache_memory_policy_set_attribute(level, "offset_size", offset_size);
             cache_memory_policy_set_attribute(level, "tag_size", 32 - offset_size);
             break;
@@ -31036,7 +31071,7 @@ class ws_ddown_sel extends ws_uielto {
         this.devices = ["CPU", "Main Memory", "Devices", "Simulation"];
         this.details = {
             CPU: ["all", "mc", "cpu"],
-            "Main Memory": ["mp", "mpcfg", "mpch"],
+            "Main Memory": ["mp", "mpcfg", "cache", "mpch"],
             Devices: ["con", "io", "iocfg", "iol3d", "ioldm"],
             Simulation: ["ed_mc", "ed_mp"]
         };
@@ -31046,6 +31081,7 @@ class ws_ddown_sel extends ws_uielto {
             cpu: ' <a class="dropdown-item" href="#" id="s5b_17" value="17"' + "\t onclick=\"wsweb_set_details('CPU_STATS');" + '\t\t  return false;"><span class="bg-dark text-white">CPU</span>&nbsp;<span data-langkey=\'Stats\'>Stats</span></a>',
             mp: ' <a class="dropdown-item" href="#" id="s5b_14" value="14"' + "\t onclick=\"wsweb_set_details('MEMORY');" + '\t\t  return false;"><span class="bg-dark text-white">MM</span>&nbsp;<span data-langkey=\'Memory\'>Memory</span></a>',
             mpcfg: '      <a class="dropdown-item" href="#" id="s5b_18" value="18"' + "\t onclick=\"wsweb_set_details('MEMORY_CONFIG');" + '\t\t  return false;"><span class="bg-dark text-white">MM</span>&nbsp;<span data-langkey=\'Configuration\'>Configuration</span></a>',
+            cache: '     <a class="dropdown-item" href="#" id="s5b_29" value="29"' + "\t onclick=\"wsweb_set_details('MEMORY_CACHE_VISUAL');" + '\t\t  return false;"><span class="bg-dark text-white">MM</span>&nbsp;<span data-langkey=\'Cache-Memory\'>Cache Memory</span></a>',
             mpch: '     <a class="dropdown-item" href="#" id="s5b_28" value="28"' + "\t onclick=\"wsweb_set_details('MEMORY_CACHE');" + '\t\t  return false;"><span class="bg-dark text-white">MM</span>&nbsp;<span data-langkey=\'Cache-Configuration\'>Cache Configuration</span></a>',
             con: '      <a class="dropdown-item" href="#" id="s5b_12" value="12"' + "\t onclick=\"wsweb_set_details('SCREEN');" + '\t\t  return false;"><span class="bg-dark text-white">Dev</span>&nbsp;<span data-langkey=\'Keyboard+Display\'>Keyboard+Display</span></a>',
             io: '      <a class="dropdown-item" href="#" id="s5b_15" value="15"' + "\t onclick=\"wsweb_set_details('IO_STATS');" + '\t\t  return false;"><span class="bg-dark text-white">Dev</span>&nbsp;<span data-langkey=\'I/O Stats\'>I/O Stats</span></a>',
@@ -31117,6 +31153,7 @@ class ws_ddown_info extends ws_uielto {
         ni.ed_mc = this.mk_nav_item("tab20", "#ed_mc", "MicroCode", "", "");
         ni.ed_mp = this.mk_nav_item("tab21", "#ed_mp", "Assembly", "", "user_microcode");
         ni.mpch = this.mk_nav_item("tab28", "#mpch", "Cache configuration", "", "");
+        ni.cache = this.mk_nav_item("tab29", "#cache", "Cache Memory", "", "");
         return ni
     }
     mk_nav_tabpane_item(n_id, n_dclass, n_content) {
@@ -31137,6 +31174,7 @@ class ws_ddown_info extends ws_uielto {
         np.ed_mc = this.mk_nav_tabpane_item("ed_mc", "", '<ws-edit-mc layout="compilebar,placeholder"></ws_edit_mc>');
         np.ed_mp = this.mk_nav_tabpane_item("ed_mp", "", '<ws-edit-as layout="compilebar,placeholder"></ws_edit_as>');
         np.mpch = this.mk_nav_tabpane_item("mpch", "", '<ws-memory-cache-config></ws-memory-cache-config>');
+        np.cache = this.mk_nav_tabpane_item("cache", "", '<ws-memory-cache></ws-memory-cache>');
         return np
     }
 }
@@ -31195,7 +31233,7 @@ class ws_simmicasm extends ws_uielto {
         super()
     }
     render(event_name) {
-        var o1 = "\x3c!-- Nav tabs --\x3e" + "<nav>" + '  <div class="nav nav-tabs nav-justified nav-tabs" id="nav-tab" role="tablist">' + '    <a class="nav-item nav-link active" id="nav-simulation-tab"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       data-bs-toggle="tab" href="#nav-simulation" role="tab"' + '       aria-controls="nav-home" aria-selected="true">' + '<span class="d-none d-sm-inline-flex" data-langkey="Simulation">Simulation</span><span class="d-sm-none">Sim.</span></a>' + '    <a class="nav-item nav-link user_microcode"    id="nav-microcode-tab" data-oldid="s5b_20"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       onclick="setTimeout(function(){ inputfirm.refresh(); }, 200) ;' + '                return false;"' + '       data-bs-toggle="tab" href="#nav-microcode" role="tab"' + '       aria-controls="nav-profile" aria-selected="false">' + '<span class="d-none d-sm-inline-flex" data-langkey="MicroCode">MicroCode</span><span class="d-sm-none">&#181;code</span></a>' + '    <a class="nav-item nav-link"        id="nav-assembly-tab"  data-oldid="s5b_21"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       onclick="setTimeout(function(){ inputasm.refresh(); }, 200) ;' + '                return false;"' + '       data-bs-toggle="tab" href="#nav-assembly" role="tab"' + '       aria-controls="nav-contact" aria-selected="false">' + '<span class="d-none d-sm-inline-flex" data-langkey="Assembly">Assembly</span><span class="d-sm-none">Asm.</span></a>' + "  </div>" + "</nav>" + "" + '<div class="tab-content p-1" id="nav-tabContent">' + '  <div class="tab-pane fade show active" id="nav-simulation" role="tabpanel" aria-labelledby="nav-simulation-tab">' + "" + '    <div class="px-1 pt-1">' + '    <ws-executionbar name="exebar1" class="btn-toolbar btn-block"' + '\t\t           components="btn_reset,btn_emins,btn_eins,btn_run"' + '\t\t           icons="up" role="toolbar"></ws-executionbar>' + "    </div>" + "" + '    <div class="px-1 pt-1">' + '    <div class="btn-toolbar btn-block" role="toolbar">' + '    <ws-ddown-sel class="col btn-group p-0" style="flex-grow:6;"' + '    \t        components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,mpch"></ws-ddown-sel>' + "    </div>" + "    </div>" + "" + '    <ws-ddown-info components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,mpch"></ws-ddown-info>' + "  </div>" + "" + '  <div class="tab-pane fade user_microcode" id="nav-microcode" role="tabpanel" ' + '       aria-labelledby="nav-microcode-tab">' + '       <ws-edit-mc layout="compilebar,editor"></ws-edit-mc>' + "  </div>" + "" + '  <div class="tab-pane fade" id="nav-assembly" role="tabpanel" ' + '       aria-labelledby="nav-assembly-tab">' + '       <ws-edit-as layout="compilebar,editor"></ws-edit-as>' + "  </div>" + "" + "  </div>" + "</div>";
+        var o1 = "\x3c!-- Nav tabs --\x3e" + "<nav>" + '  <div class="nav nav-tabs nav-justified nav-tabs" id="nav-tab" role="tablist">' + '    <a class="nav-item nav-link active" id="nav-simulation-tab"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       data-bs-toggle="tab" href="#nav-simulation" role="tab"' + '       aria-controls="nav-home" aria-selected="true">' + '<span class="d-none d-sm-inline-flex" data-langkey="Simulation">Simulation</span><span class="d-sm-none">Sim.</span></a>' + '    <a class="nav-item nav-link user_microcode"    id="nav-microcode-tab" data-oldid="s5b_20"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       onclick="setTimeout(function(){ inputfirm.refresh(); }, 200) ;' + '                return false;"' + '       data-bs-toggle="tab" href="#nav-microcode" role="tab"' + '       aria-controls="nav-profile" aria-selected="false">' + '<span class="d-none d-sm-inline-flex" data-langkey="MicroCode">MicroCode</span><span class="d-sm-none">&#181;code</span></a>' + '    <a class="nav-item nav-link"        id="nav-assembly-tab"  data-oldid="s5b_21"' + '       style="border-top-width:2px; border-right-width:2px; border-left-width:2px;"' + '       onclick="setTimeout(function(){ inputasm.refresh(); }, 200) ;' + '                return false;"' + '       data-bs-toggle="tab" href="#nav-assembly" role="tab"' + '       aria-controls="nav-contact" aria-selected="false">' + '<span class="d-none d-sm-inline-flex" data-langkey="Assembly">Assembly</span><span class="d-sm-none">Asm.</span></a>' + "  </div>" + "</nav>" + "" + '<div class="tab-content p-1" id="nav-tabContent">' + '  <div class="tab-pane fade show active" id="nav-simulation" role="tabpanel" aria-labelledby="nav-simulation-tab">' + "" + '    <div class="px-1 pt-1">' + '    <ws-executionbar name="exebar1" class="btn-toolbar btn-block"' + '\t\t           components="btn_reset,btn_emins,btn_eins,btn_run"' + '\t\t           icons="up" role="toolbar"></ws-executionbar>' + "    </div>" + "" + '    <div class="px-1 pt-1">' + '    <div class="btn-toolbar btn-block" role="toolbar">' + '    <ws-ddown-sel class="col btn-group p-0" style="flex-grow:6;"' + '    \t        components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,mpch,cache"></ws-ddown-sel>' + "    </div>" + "    </div>" + "" + '    <ws-ddown-info components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,mpch,cache"></ws-ddown-info>' + "  </div>" + "" + '  <div class="tab-pane fade user_microcode" id="nav-microcode" role="tabpanel" ' + '       aria-labelledby="nav-microcode-tab">' + '       <ws-edit-mc layout="compilebar,editor"></ws-edit-mc>' + "  </div>" + "" + '  <div class="tab-pane fade" id="nav-assembly" role="tabpanel" ' + '       aria-labelledby="nav-assembly-tab">' + '       <ws-edit-as layout="compilebar,editor"></ws-edit-as>' + "  </div>" + "" + "  </div>" + "</div>";
         this.innerHTML = o1
     }
 }
@@ -33123,7 +33161,7 @@ class ws_uiscreen_classic extends ws_uielto {
         return o1
     }
     render_populate_classic_details() {
-        var o1 = '    <div class="row ps-2 pe-3">' + '\t <ws-executionbar name="exebar1" class="btn-toolbar btn-block"' + '\t\t\t  components="btn_reset,btn_emins,btn_eins,btn_run"' + '\t\t\t  icons="up" role="toolbar"></ws-executionbar>' + "\t </div>" + "" + '\t <div class="row ps-2 pe-3 pt-1">' + '\t <div class="btn-toolbar btn-block" role="toolbar">' + '\t      <button class="btn btn-light shadow-sm col py-0 mx-1"' + '\t\t      style="border-color: #BBBBBB; flex-grow:1;"' + '\t\t      data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-html="true"' + "\t\t      title=\"This button opens the 'state management' dialog: it shows the current state, saves the current state, and shows the differences between two states.\"" + "\t\t      onclick=\"wsweb_dialog_open('state');" + '\t\t\t       return false;">' + '<em class="fas fa-camera"></em>' + "&nbsp;" + '<span data-langkey="States">States</span></button>' + '\t      <ws-ddown-sel class="col btn-group p-0 mx-1" style="flex-grow:2;"' + '                       components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,ed_mc,ed_mp,mpch"></ws-ddown-sel>' + "\t </div>" + "\t </div>" + "" + '\t <ws-ddown-info components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,ed_mc,ed_mp,mpch"></ws-ddown-info>' + "";
+        var o1 = '    <div class="row ps-2 pe-3">' + '\t <ws-executionbar name="exebar1" class="btn-toolbar btn-block"' + '\t\t\t  components="btn_reset,btn_emins,btn_eins,btn_run"' + '\t\t\t  icons="up" role="toolbar"></ws-executionbar>' + "\t </div>" + "" + '\t <div class="row ps-2 pe-3 pt-1">' + '\t <div class="btn-toolbar btn-block" role="toolbar">' + '\t      <button class="btn btn-light shadow-sm col py-0 mx-1"' + '\t\t      style="border-color: #BBBBBB; flex-grow:1;"' + '\t\t      data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-html="true"' + "\t\t      title=\"This button opens the 'state management' dialog: it shows the current state, saves the current state, and shows the differences between two states.\"" + "\t\t      onclick=\"wsweb_dialog_open('state');" + '\t\t\t       return false;">' + '<em class="fas fa-camera"></em>' + "&nbsp;" + '<span data-langkey="States">States</span></button>' + '\t      <ws-ddown-sel class="col btn-group p-0 mx-1" style="flex-grow:2;"' + '                       components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,ed_mc,ed_mp,mpch,cache"></ws-ddown-sel>' + "\t </div>" + "\t </div>" + "" + '\t <ws-ddown-info components="mp,con,all,mc,io,cpu,mpcfg,iocfg,iol3d,ioldm,ed_mc,ed_mp,mpch,cache"></ws-ddown-info>' + "";
         return o1
     }
     screen_asm() {
@@ -33520,6 +33558,10 @@ var hash_detail2action = {
     MEMORY_CACHE: function(){
         wsweb_set_details_select(28);
         show_memories_values()
+    },
+    MEMORY_CACHE_VISUAL: function(){
+        wsweb_set_details_select(29);
+        show_memories_values();
     },
     IO_STATS: function() {
         wsweb_set_details_select(15);
