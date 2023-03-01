@@ -29291,7 +29291,7 @@ class ws_memory_cache extends ws_uielto
 
     render_skel()
     {
-        this.innerHTML = '<div id="' + 'mem_cache_config' + '" ' +
+        this.innerHTML = '<div id="' + 'mem_cache_info' + '" ' +
             'style="height:58vh; width:inherit; overflow-y:auto;"></div>' ; 
     }
 
@@ -29301,7 +29301,29 @@ class ws_memory_cache extends ws_uielto
           $(div_hash).html('');
           return
       }
+      render_cache_memory_table(1);
     }
+}
+
+function render_cache_memory_table(level){
+    var div_hash = "#mem_cache_info";
+    var o1 = "";
+    if (typeof simhw_internalState("CACHE_MEMORY") == "undefined"){
+        return
+    }
+    o1 += '<div class="d-flex flex-row justify-content-center mt-25"><button type="button" class="btn btn-secondary"><-</button><p id="cache_info_name" class="mx-5 align-text-middle">CACHE 1</p>' +
+    '<button type="button" class="btn btn-secondary">-></button></div>';
+    o1 += '<div class="accordion-body px-2 py-3 m-3"><div class="row">';
+    let cache_data = simhw_internalState_get("CACHE_MEMORY", level.toString());
+    o1 += '<div class="col text-center border border-dark bg-light">Tag</div><div class="col text-center border border-dark bg-light">Index</div><div class="col text-center border border-dark bg-light">Offset</div></div>';
+    for (var i = 1; i <= cache_data["num_lines"]*cache_data["line_size"]; i++){
+        o1 += '<div class="row"><div class="col text-center border border-dark">' + "".padStart(cache_data["placement_policy"]["tag_size"], "0") + '</div>' +
+        '<div class="col text-center border border-dark">' + "".padStart(cache_data["placement_policy"]["index_size"], "0") + '</div>' +
+        '<div class="col text-center border border-dark">' + "".padStart(cache_data["placement_policy"]["offset_size"], "0") + '</div></div>';
+    }
+    o1 += '</div></div>';
+    console.log(cache_data);
+    $(div_hash).html(o1);
 }
 
 if (typeof window !== "undefined") {
@@ -29391,6 +29413,7 @@ function cache_config_build_ui(){
     // Insertar código de cajitas de opciones de caché
     o1 += '</div></div>'
     $(div_hash).html(o1);
+    render_cache_memory_table(1);
 }
 
 function cache_config_add_level(){
