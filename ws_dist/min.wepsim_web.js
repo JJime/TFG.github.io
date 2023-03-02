@@ -2476,15 +2476,16 @@ function main_memory_get_baseaddr() {
     return all_baseaddr
 }
 
-function cache_memory_placement_policy_attr(type){
+
+function cache_memory_placement_policy_attr(type, cache_data){
     var attr;
     switch (type){
         case "Direct Mapped":
             attr = {
                 "type" : type,
-                "tag_size" : 0,
-                "index_size" : 0,
                 "offset_size" : 0,
+                "index_size" : 0,
+                "tag_size" : 0
             }
             break;
         case "Fully-associative":
@@ -2500,13 +2501,43 @@ function cache_memory_placement_policy_attr(type){
                 "tag_size" : 0,
                 "set_size" : 0,
                 "offset_size" : 0,
-                "num_ways" : 0
+                "num_ways" : 1
             }
             break;
         default:
             attr = {"type" : "Unknown"};
     }
     return attr;
+}
+
+function cache_memory_placement_policy_calc_values(cache_data){
+    var attr = cache_data["placement_policy"];
+    switch (attr["type"]){
+        case "Direct Mapped":
+            var offset_size = Math.ceil(Math.log2(cache_data["line_size"]));
+            var index_size = Math.ceil(Math.log2(cache_data["num_lines"]));
+            var tag_size = 32 - offset_size - index_size;
+            attr["offset_size"] = offset_size;
+            attr["index_size"] = index_size;
+            attr["tag_size"] = tag_size;
+            break;
+        case "Fully-associative":
+            var offset_size = Math.ceil(Math.log2(cache_data["line_size"]));
+            var tag_size = 32 - offset_size;
+            attr["offset_size"] = offset_size;
+            attr["tag_size"] = tag_size;
+            break;
+        case "Set-associative":
+            var offset_size = Math.ceil(Math.log2(cache_data["line_size"]));
+            var num_sets = Math.round((cache_data["cache_size"]*1024)/(cache_data["line_size"]*8*attr["num_ways"]));
+            var index_size = Math.ceil(Math.log2(num_sets));
+            var tag_size = 32 - offset_size - index_size;
+            attr["offset_size"] = offset_size;
+            attr["set_size"] = index_size;
+            attr["tag_size"] = tag_size;
+            break;
+    }
+    //cache_memory_set_attribute(cache_data["id"], "placement_policy", attr);
 }
 
 function cache_memory_replacement_policy_attr(type){
@@ -2533,8 +2564,9 @@ function cache_memory_add_level(level){
     cur_level.id = level;
     cur_level.line_size = 1;
     cur_level.cache_size = 1;
-    cur_level.num_lines = 0;
-    cur_level.placement_policy = cache_memory_placement_policy_attr("Direct Mapped");
+    cur_level.num_lines = Math.round((cur_level["cache_size"]*(1024))/(cur_level["line_size"]*8));
+    cur_level.placement_policy = cache_memory_placement_policy_attr("Direct Mapped", cur_level);
+    cache_memory_placement_policy_calc_values(cur_level);
     cur_level.replacement_policy = cache_memory_replacement_policy_attr("LFU");
     cur_level.split_cache = false;
     cur_level.hits = 0;
@@ -29292,7 +29324,7 @@ class ws_memory_cache extends ws_uielto
     render_skel()
     {
         this.innerHTML = '<div id="' + 'mem_cache_info' + '" ' +
-            'style="height:58vh; width:inherit; overflow-y:auto;"></div>' ; 
+            'style="height:58vh; width:95%; overflow-y:auto; margin-left:3%"></div>' ; 
     }
 
     render_populate ( )
@@ -29308,20 +29340,23 @@ class ws_memory_cache extends ws_uielto
 function render_cache_memory_table(level){
     var div_hash = "#mem_cache_info";
     var o1 = "";
+    var colors = ["#FF99CC", "#A9D0F5", "#FACC2E"]
     if (typeof simhw_internalState("CACHE_MEMORY") == "undefined"){
         return
     }
     o1 += '<div class="d-flex flex-row justify-content-center mt-25"><button type="button" class="btn btn-secondary"><-</button><p id="cache_info_name" class="mx-5 align-text-middle">CACHE 1</p>' +
     '<button type="button" class="btn btn-secondary">-></button></div>';
-    o1 += '<div class="accordion-body px-2 py-3 m-3"><div class="row">';
+    o1 += '<table class="table table-sm mt-1 mr-1"><tr>';
     let cache_data = simhw_internalState_get("CACHE_MEMORY", level.toString());
-    o1 += '<div class="col text-center border border-dark bg-light">Tag</div><div class="col text-center border border-dark bg-light">Index</div><div class="col text-center border border-dark bg-light">Offset</div></div>';
-    for (var i = 1; i <= cache_data["num_lines"]*cache_data["line_size"]; i++){
-        o1 += '<div class="row"><div class="col text-center border border-dark">' + "".padStart(cache_data["placement_policy"]["tag_size"], "0") + '</div>' +
-        '<div class="col text-center border border-dark">' + "".padStart(cache_data["placement_policy"]["index_size"], "0") + '</div>' +
-        '<div class="col text-center border border-dark">' + "".padStart(cache_data["placement_policy"]["offset_size"], "0") + '</div></div>';
+    o1 += '<th class="col text-center border border-dark bg-light">Tag</th><th class="col text-center border border-dark bg-light">Index</th><th class="col text-center border border-dark bg-light">Offset</th></tr>';
+    for (var i = 1; i <= cache_data["num_lines"]; i++){
+        for (var j = 0; j < cache_data["line_size"]; j++){
+            o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length] + '">' + "".padStart(cache_data["placement_policy"]["tag_size"], "0") + '</th>' +
+            '<th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length ] + '">' + "".padStart(cache_data["placement_policy"]["index_size"], "0") + '</th>' +
+            '<th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length] + '">' + "".padStart(cache_data["placement_policy"]["offset_size"], "0") + '</th></tr>';
+        }
     }
-    o1 += '</div></div>';
+    o1 += '</table></div>';
     console.log(cache_data);
     $(div_hash).html(o1);
 }
@@ -29435,11 +29470,9 @@ function cache_config_decrease_level(){
 }
 
 function cache_config_change(obj, level){
+    var cache_level = simhw_internalState_get("CACHE_MEMORY", level);
     if ($(obj).hasClass("cache_memory_line_size")){
         cache_memory_set_attribute(level, "line_size", parseInt(obj.value));
-    }
-    else if($(obj).hasClass("cache_memory_placement_policy")){
-        cache_memory_set_attribute(level, "placement_policy", cache_memory_placement_policy_attr(obj.value));
     }
     else if($(obj).hasClass("cache_memory_replacement_policy")){
         cache_memory_set_attribute(level, "replacement_policy", cache_memory_replacement_policy_attr(obj.value));
@@ -29453,32 +29486,12 @@ function cache_config_change(obj, level){
     else if($(obj).hasClass("cache_memory_size")){
         cache_memory_set_attribute(level, "cache_size", parseInt(obj.value));
     }
-    var cache_level = simhw_internalState_get("CACHE_MEMORY", level);
     var num_lines = Math.round((cache_level["cache_size"]*(1024))/(cache_level["line_size"]*8));
     cache_memory_set_attribute(level, "num_lines", num_lines);
-    switch (cache_level["placement_policy"].type){
-        case "Direct Mapped":
-            var offset_size = Math.ceil(Math.log2(cache_level["line_size"]));
-            cache_memory_policy_set_attribute(level, "offset_size", offset_size);
-            var index_size = Math.ceil(Math.log2(num_lines));
-            cache_memory_policy_set_attribute(level, "index_size", index_size);
-            cache_memory_policy_set_attribute(level, "tag_size", 32 - offset_size - index_size);
-            break;
-        case "Fully-associative":
-            var offset_size = Math.ceil(Math.log2(cache_level["line_size"]));
-            cache_memory_set_attribute(level, "num_lines", )
-            cache_memory_policy_set_attribute(level, "offset_size", offset_size);
-            cache_memory_policy_set_attribute(level, "tag_size", 32 - offset_size);
-            break;
-        case "Set-associative":
-            var offset_size = Math.ceil(Math.log2(cache_level["line_size"]));
-            cache_memory_policy_set_attribute(level, "offset_size", offset_size);
-            var num_sets = Math.round((cache_level["cache_size"]*1024)/(cache_level["line_size"]*8*cache_level["placement_policy"]["num_ways"]));
-            var index_size = Math.ceil(Math.log2(num_sets));
-            cache_memory_policy_set_attribute(level, "set_size", index_size);
-            cache_memory_policy_set_attribute(level, "tag_size", 32 - offset_size - index_size);
-            break;
+    if($(obj).hasClass("cache_memory_placement_policy")){
+        cache_memory_set_attribute(level, "placement_policy", cache_memory_placement_policy_attr(obj.value, cache_level));
     }
+    cache_memory_placement_policy_calc_values(cache_level);
     cache_config_build_ui();
 }
 
