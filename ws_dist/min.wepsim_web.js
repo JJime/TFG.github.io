@@ -1041,7 +1041,7 @@ function update_memories(preSIMWARE) {
     }
     show_main_memory(mp_obj, 0, true, true);
     show_control_memory(mc_obj, 0, true)
-    simhw_internalState_reset("CACHE_MEMORY", {});
+    simhw_internalState_reset("CACHE_MEMORY", []);
 }
 
 function hex2float(hexvalue) {
@@ -2477,7 +2477,7 @@ function main_memory_get_baseaddr() {
 }
 
 
-function cache_memory_placement_policy_attr(type, cache_data){
+function cache_memory_placement_policy_attr(type){
     var attr;
     switch (type){
         case "Direct Mapped":
@@ -2537,7 +2537,7 @@ function cache_memory_placement_policy_calc_values(cache_data){
             attr["tag_size"] = tag_size;
             break;
     }
-    //cache_memory_set_attribute(cache_data["id"], "placement_policy", attr);
+    cache_memory_set_attribute(cache_data["id"], "placement_policy", attr);
 }
 
 function cache_memory_replacement_policy_attr(type){
@@ -2559,9 +2559,18 @@ function cache_memory_replacement_policy_attr(type){
 
 function cache_memory_add_level(level){
     var cur_cache = simhw_internalState("CACHE_MEMORY");
-    cur_cache[level] = {};
-    var cur_level = cur_cache[level];
-    cur_level.id = level;
+    var cur_level;
+    if (level == "L1 Instructions"){
+        cur_cache.splice(1, 0, {});
+        cur_level = cur_cache[1];
+        cur_level.id = level;
+    }
+    else {
+        cur_cache.push({});
+        cur_level = cur_cache[cur_cache.length - 1];
+        cur_level.id = "L" + level.toString();
+    };
+    console.log(cur_level.id)
     cur_level.line_size = 1;
     cur_level.cache_size = 1;
     cur_level.num_lines = Math.round((cur_level["cache_size"]*(1024))/(cur_level["line_size"]*8));
@@ -2572,30 +2581,44 @@ function cache_memory_add_level(level){
     cur_level.hits = 0;
     cur_level.misses = 0;
     cur_level.total_access = 0;
-    cur_level.data = (cur_level.split_cache ? {"data" : {}, "instructions" : {}} : {});
-    console.log(cur_cache);
+    cur_level.data = {};
     simhw_internalState_reset("CACHE_MEMORY", cur_cache);
 }
 
 function cache_memory_erase_level(level){
     var cur_cache = simhw_internalState("CACHE_MEMORY");
-    delete cur_cache[level];
+    if (level == 1){
+        cur_cache = [];
+    } else {
+        var cur_level = cache_memory_get_level(level);
+        cur_cache.splice([cur_cache.indexOf(cur_level)], 1);
+    }
+    console.log(cur_cache);
     simhw_internalState_reset("CACHE_MEMORY", cur_cache);
 }
 
+function cache_memory_get_level(level){
+    var cache_data = simhw_internalState("CACHE_MEMORY");
+    for (cache in cache_data){
+        if (cache_data[cache]["id"] == level){
+            return cache_data[cache];
+        }
+    }
+    return null;
+}
 function cache_memory_set_attribute(level, attribute, value){
-    var cache_level = simhw_internalState("CACHE_MEMORY");
-    cache_level[level][attribute] = value;
+    var cache_level = cache_memory_get_level(level);
+    cache_level[attribute] = value;
 }
 
 function cache_memory_policy_set_attribute(level, attribute, value){
-    var cache_level = simhw_internalState("CACHE_MEMORY");
-    cache_level[level]["placement_policy"][attribute] = value;
+    var cache_level = cache_memory_get_level(level);
+    cache_level["placement_policy"][attribute] = value;
 }
 
 function cache_memory_replacement_policy_set_attribute(level, attribute, value){
-    var cache_level = simhw_internalState("CACHE_MEMORY");
-    cache_level[level]["replacement_policy"][attribute] = value;
+    var cache_level = cache_memory_get_level(level);
+    cache_level["replacement_policy"][attribute] = value;
 }
 
 function get_deco_from_pc(pc) {
@@ -7268,7 +7291,7 @@ sim.ep.states["MEM_ACC"] 	= { name:"MEM_ACC", verbal: "Veces que el código ha a
 sim.ep.internal_states.segments = {};
 sim.ep.internal_states.MP = {};
 sim.ep.internal_states.MP_wc = 0;
-sim.ep.internal_states.CACHE_MEMORY = {};
+sim.ep.internal_states.CACHE_MEMORY = [];
 sim.ep.signals.MRDY = {
     name: "MRDY",
     visible: true,
@@ -12971,7 +12994,7 @@ sim.poc.components.MEMORY = {
 };
 sim.poc.internal_states.segments = {};
 sim.poc.internal_states.MP = {};
-sim.poc.internal_states.CACHE_MEMORY = {};
+sim.poc.internal_states.CACHE_MEMORY = [];
 sim.poc.internal_states.MP_wc = 0;
 sim.poc.signals.MRDY = {
     name: "MRDY",
@@ -29347,17 +29370,16 @@ function render_cache_memory_table(level){
     o1 += '<div class="d-flex flex-row justify-content-center mt-25"><button type="button" class="btn btn-secondary"><-</button><p id="cache_info_name" class="mx-5 align-text-middle">CACHE 1</p>' +
     '<button type="button" class="btn btn-secondary">-></button></div>';
     o1 += '<table class="table table-sm mt-1 mr-1"><tr>';
-    let cache_data = simhw_internalState_get("CACHE_MEMORY", level.toString());
-    o1 += '<th class="col text-center border border-dark bg-light">Tag</th><th class="col text-center border border-dark bg-light">Index</th><th class="col text-center border border-dark bg-light">Offset</th></tr>';
+    let cache_data = cache_memory_get_level(level);
+    if (cache_data == null){
+        return;
+    }
+    o1 += '<th class="col text-center border border-dark bg-light">Line</th><th class="col text-center border border-dark bg-light">Tag</th></tr>';
     for (var i = 1; i <= cache_data["num_lines"]; i++){
-        for (var j = 0; j < cache_data["line_size"]; j++){
-            o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length] + '">' + "".padStart(cache_data["placement_policy"]["tag_size"], "0") + '</th>' +
-            '<th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length ] + '">' + "".padStart(cache_data["placement_policy"]["index_size"], "0") + '</th>' +
-            '<th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length] + '">' + "".padStart(cache_data["placement_policy"]["offset_size"], "0") + '</th></tr>';
-        }
+        o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length] + '">' + i.toString() + '</th>' +
+        '<th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length] + '">' + "".padStart(cache_data["placement_policy"]["tag_size"], "0") + '</th></tr>';
     }
     o1 += '</table></div>';
-    console.log(cache_data);
     $(div_hash).html(o1);
 }
 
@@ -29411,16 +29433,18 @@ function cache_config_build_ui(){
     if (typeof simhw_internalState("CACHE_MEMORY") == "undefined"){
         return
     }
-    for (var i = 1; i <= cache_levels; i++){
-      let cache_level = i.toString()
-      let cache_data = simhw_internalState_get("CACHE_MEMORY", i);
-      o1 += '<div class="col border mt-1" id="#mem_cache_config_L'+ cache_level + '"><p class="p-2 bg-light">Cache L' + cache_level + '</p><table class="table table-bordered"><tbody>' +
-      '<tr><td>Cache size (KB)</td><td><input type="number" min:1 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
-      '<tr><td>Line Size (Bytes)</td><td><input type="number" min:1 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>' +
-      '<tr><td>Replacement policy</td><td><div class="form-group"><select class="form-control cache_memory_replacement_policy" id="#cache_L' + cache_level + '_replacement_policy" value=' + cache_data["replacement_policy"].type + ' onchange="cache_config_change(this, ' + cache_level + ')">' +
+    let caches = simhw_internalState("CACHE_MEMORY");
+    for (cache in caches){
+      console.log(cache);
+      let cache_data = simhw_internalState_get("CACHE_MEMORY", cache);
+      let cache_level = cache_data["id"]
+      o1 += '<div class="col border mt-1" id="#mem_cache_config_'+ cache_level + '"><p class="p-2 bg-light">Cache ' + cache_level + '</p><table class="table table-bordered"><tbody>' +
+      '<tr><td>Cache size (KB)</td><td><input type="number" min:1 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
+      '<tr><td>Line Size (Bytes)</td><td><input type="number" min:1 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
+      '<tr><td>Replacement policy</td><td><div class="form-group"><select class="form-control cache_memory_replacement_policy" id="#cache_' + cache_level + '_replacement_policy" value=' + cache_data["replacement_policy"].type + ' onchange="cache_config_change(this, ' + cache + ')">' +
       '<option value="LFU" ' + (cache_data["replacement_policy"].type.localeCompare("LFU") == 0 ? 'selected' : '') + ' >LFU</option>' +
       '<option value="FIFO" ' + (cache_data["replacement_policy"].type.localeCompare("FIFO") == 0 ? 'selected' : '') + '>FIFO</option>' + 
-      '<tr><td>Placement policy</td><td><div class="form-group"><select class="form-control cache_memory_placement_policy" id="#cache_L' + cache_level + '_policy" value=' + cache_data["placement_policy"].type + ' onchange="cache_config_change(this, ' + cache_level + ')">' +
+      '<tr><td>Placement policy</td><td><div class="form-group"><select class="form-control cache_memory_placement_policy" id="#cache_' + cache_level + '_policy" value=' + cache_data["placement_policy"].type + ' onchange="cache_config_change(this, ' + cache + ')">' +
       '<option value="Direct Mapped" ' + (cache_data["placement_policy"].type.localeCompare("Direct Mapped") == 0 ? 'selected' : '') + ' >Direct Mapped</option>'+
       '<option value="Fully-associative" ' + (cache_data["placement_policy"].type.localeCompare("Fully-associative") == 0 ? 'selected' : '') + ' >Fully-associative</option>' +
       '<option value="Set-associative" ' + (cache_data["placement_policy"].type.localeCompare("Set-associative") == 0 ? 'selected' : '') + ' >Set-associative</option></select></div></td></tr>' +
@@ -29438,17 +29462,18 @@ function cache_config_build_ui(){
         o1 += '<div class="row w-80 h-90 mx-auto"><div class="row"><div class="col text-center border border-dark w-25">tag: ' + cache_data["placement_policy"].tag_size + '</div>' +
         '<div class="col text-center border border-dark w-25">set: ' + cache_data["placement_policy"].set_size + '</div>' +
         '<div class="col text-center border border-dark w-50">offset: ' + cache_data["placement_policy"].offset_size + '</div></div></div>'
-        o1 += '</td></tr><tr><td>Number of ways</td><td><input type="number" min:1 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache_level + ')"></td></tr>';
+        o1 += '</td></tr><tr><td>Number of ways</td><td><input type="number" min:1 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>';
       }
-      if (i == 1){
-        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input cache_memory_split_instruction"' + (cache_data["split_cache"] == true ? 'checked' : '') + ' onchange="cache_config_change(this, ' + cache_level + ')">Split data and instructions</label></div></td></tr>';
+      // Add split cache checkbox
+      if (cache_data["id"] == "L1"){
+        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input cache_memory_split_instruction"' + (cache_data["split_cache"] == true ? 'checked' : '') + ' onchange="cache_config_change(this, ' + cache + ')">Split data and instructions</label></div></td></tr>';
       }
       o1 += '</tbody></table></div>';
     }
     // Insertar código de cajitas de opciones de caché
     o1 += '</div></div>'
     $(div_hash).html(o1);
-    render_cache_memory_table(1);
+    render_cache_memory_table("L1");
 }
 
 function cache_config_add_level(){
@@ -29471,6 +29496,7 @@ function cache_config_decrease_level(){
 
 function cache_config_change(obj, level){
     var cache_level = simhw_internalState_get("CACHE_MEMORY", level);
+    level = cache_level["id"];
     if ($(obj).hasClass("cache_memory_line_size")){
         cache_memory_set_attribute(level, "line_size", parseInt(obj.value));
     }
@@ -29482,6 +29508,12 @@ function cache_config_change(obj, level){
     }
     else if($(obj).hasClass("cache_memory_split_instruction")){
         cache_memory_set_attribute(level, "split_cache", obj.checked);
+        if(obj.checked){
+            cache_memory_add_level("L1 Instructions");
+        }
+        else {
+            cache_memory_erase_level("L1 Instructions");
+        }
     }
     else if($(obj).hasClass("cache_memory_size")){
         cache_memory_set_attribute(level, "cache_size", parseInt(obj.value));
