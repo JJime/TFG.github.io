@@ -1039,9 +1039,25 @@ function update_memories(preSIMWARE) {
     for (var key in SIMWARE["seg"]) {
         simhw_internalState_set("segments", key, SIMWARE["seg"][key])
     }
+    var cur_cache = simhw_internalState("CACHE_MEMORY");
+    cur_cache.forEach(cache => {
+        cache.data = {} 
+        }
+    );
+    cur_cache.forEach(cache => {
+        cache.stats = {
+            last_addr : 0,
+            last_h_m : "",
+            last_parts : null,
+            last_r_w : "",
+            n_access : 0,
+            n_hits : 0,
+            n_misses : 0
+        }
+    });
+    simhw_internalState_reset("CACHE_MEMORY", cur_cache);
     show_main_memory(mp_obj, 0, true, true);
     show_control_memory(mc_obj, 0, true)
-    simhw_internalState_reset("CACHE_MEMORY", []);
 }
 
 function hex2float(hexvalue) {
@@ -2476,6 +2492,123 @@ function main_memory_get_baseaddr() {
     return all_baseaddr
 }
 
+function cache_memory_update_stats(memory, address, parts, r_w, m_h, clock_timestamp) {
+    memory.stats.n_access++;
+    memory.stats.last_addr = address;
+    memory.stats.last_parts = parts;
+    memory.stats.last_r_w = r_w;
+    memory.stats.last_h_m = m_h;
+    if (m_h == "miss") {
+        memory.stats.n_misses++
+    } else {
+        memory.stats.n_hits++
+    }
+    memory.data[parts.set].tags[parts.tag].n_access++;
+    if (r_w == "write") {
+        memory.data[parts.set].tags[parts.tag].dirty = 1
+    }
+    memory.data[parts.set].tags[parts.tag].timestamp = clock_timestamp
+}
+
+function cache_memory_select_victim(memory, parts) {
+    var keys = Object.keys(memory.data[parts.set].tags);
+    var tag_victim = 0;
+    if (memory["replacement_policy"]["type"] == "LFU") {
+        tag_victim = keys[0];
+        var tag_naccess = memory.data[parts.set].tags[tag_victim].n_access;
+        for (var i = 1; i < keys.length; i++) {
+            if (tag_naccess > memory.data[parts.set].tags[keys[i]].n_access) {
+                tag_victim = keys[i];
+                tag_naccess = memory.data[parts.set].tags[tag_victim].n_access
+            }
+        }
+    } else if (memory["replacement_policy"]["type"] == "FIFO") {
+        tag_victim = keys[0];
+        var tag_stamp = memory.data[parts.set].tags[tag_victim].timestamp;
+        for (var i = 1; i < keys.length; i++) {
+            if (tag_stamp > memory.data[parts.set].tags[keys[i]].timestamp) {
+                tag_victim = keys[i];
+                tag_stamp = memory.data[parts.set].tags[tag_victim].timestamp
+            }
+        }
+    }
+    return tag_victim
+}
+
+function cache_memory_split(memory, address) {
+    var parts = {
+        set: 0,
+        tag: 0,
+        offset: 0
+    };
+    address = address >>> 0;
+    if (typeof memory["placement_policy"]["tag_size"] != "undefined"){
+        var mask_tag = Math.pow(2, memory["placement_policy"]["tag_size"]) - 1 >>> 0;
+        mask_tag = mask_tag << 32 - memory["placement_policy"]["tag_size"] >>> 0;
+        parts.tag = (address & mask_tag) >>> 32 - memory["placement_policy"]["tag_size"];
+    }
+    if (typeof memory["placement_policy"]["set_size"] != "undefined"){
+        var mask_set = (memory["num_lines"] - 1) >>> 0;
+        mask_set = mask_set << memory["placement_policy"]["offset_size"] >>> 0;
+        parts.set = (address & mask_set) >>> memory["placement_policy"]["offset_size"];
+    }
+    if (typeof memory["placement_policy"]["offset_size"] != "undefined"){
+        var mask_off = Math.pow(2, memory["placement_policy"]["offset_size"]) - 1 >>> 0;
+        parts.offset = address & mask_off;
+    }
+    return parts
+}
+
+function segments_addr_within_text(address) {
+    return address >= sim_segments[".text"].begin && address <= sim_segments[".text"].end || address >= sim_segments[".ktext"].begin && address <= sim_segments[".ktext"].end
+}
+
+function cache_memory_access(memory, address, r_w, clock_timestamp) {
+    var cache_level = cache_memory_get_level(memory);
+    if (cache_level.split_cache) {
+        // If instruction segment, go to instructions L1 cache and start processing there.
+        if (segments_addr_within_text(address)){
+            cache_memory_access("L1 Instructions", address, r_w, clock_timestamp);
+            return false
+        } 
+    }
+    var parts = cache_memory_split(cache_level, address);
+    if (typeof cache_level.data[parts.set] == "undefined") {
+        cache_level.data[parts.set] = {
+            tags: {},
+            number_tags: 0
+        }
+    }
+    // CASE HIT
+    if (typeof cache_level.data[parts.set].tags[parts.tag] != "undefined" && cache_level.data[parts.set].tags[parts.tag].valid == 1) {
+        cache_memory_update_stats(cache_level, address, parts, r_w, "hit", clock_timestamp);
+        render_cache_memory_table();
+        return true
+    }
+    // ON NO HIT
+    if (typeof cache_level.data[parts.set].number_tags > 3){
+        var tag_victim = cache_memory_select_victim(cache_level, parts.set);
+        cache_level.data[parts.set].tags[tag_victim].valid = 0;
+        cache_level.data[parts.set].number_tags--;
+    }
+
+    cache_level.data[parts.set].tags[parts.tag] = {
+        n_access: 0,
+        valid: 1,
+        dirty: 0
+    };
+    cache_level.data[parts.set].number_tags++;
+    cache_memory_update_stats(cache_level, address, parts, r_w, "miss", clock_timestamp);
+    // Select next cache
+    var next_cache = cache_level.next_cache;
+    // Access next cache
+    if (next_cache != null) {
+        cache_memory_access(next_cache, address, r_w, clock_timestamp);
+    }
+    render_cache_memory_table();
+    return false
+}
+
 
 function cache_memory_placement_policy_attr(type){
     var attr;
@@ -2484,7 +2617,7 @@ function cache_memory_placement_policy_attr(type){
             attr = {
                 "type" : type,
                 "offset_size" : 0,
-                "index_size" : 0,
+                "set_size" : 0,
                 "tag_size" : 0
             }
             break;
@@ -2492,7 +2625,7 @@ function cache_memory_placement_policy_attr(type){
             attr = {
                 "type" : type,
                 "tag_size" : 0,
-                "offset_size" : 0
+                "offset_size" : 0,
             }
             break;
         case "Set-associative":
@@ -2501,7 +2634,7 @@ function cache_memory_placement_policy_attr(type){
                 "tag_size" : 0,
                 "set_size" : 0,
                 "offset_size" : 0,
-                "num_ways" : 1
+                "num_ways" : 1,
             }
             break;
         default:
@@ -2518,7 +2651,7 @@ function cache_memory_placement_policy_calc_values(cache_data){
             var index_size = Math.ceil(Math.log2(cache_data["num_lines"]));
             var tag_size = 32 - offset_size - index_size;
             attr["offset_size"] = offset_size;
-            attr["index_size"] = index_size;
+            attr["set_size"] = index_size;
             attr["tag_size"] = tag_size;
             break;
         case "Fully-associative":
@@ -2529,7 +2662,7 @@ function cache_memory_placement_policy_calc_values(cache_data){
             break;
         case "Set-associative":
             var offset_size = Math.ceil(Math.log2(cache_data["line_size"]));
-            var num_sets = Math.round((cache_data["cache_size"]*1024)/(cache_data["line_size"]*8*attr["num_ways"]));
+            var num_sets = Math.round((cache_data["cache_size"]*1024)/(cache_data["line_size"]*attr["num_ways"]));
             var index_size = Math.ceil(Math.log2(num_sets));
             var tag_size = 32 - offset_size - index_size;
             attr["offset_size"] = offset_size;
@@ -2570,30 +2703,61 @@ function cache_memory_add_level(level){
         cur_level = cur_cache[cur_cache.length - 1];
         cur_level.id = "L" + level.toString();
     };
-    console.log(cur_level.id)
     cur_level.line_size = 1;
     cur_level.cache_size = 1;
-    cur_level.num_lines = Math.round((cur_level["cache_size"]*(1024))/(cur_level["line_size"]*8));
+    cur_level.num_lines = Math.round((cur_level["cache_size"]*(1024))/(cur_level["line_size"]));
     cur_level.placement_policy = cache_memory_placement_policy_attr("Direct Mapped", cur_level);
     cache_memory_placement_policy_calc_values(cur_level);
     cur_level.replacement_policy = cache_memory_replacement_policy_attr("LFU");
     cur_level.split_cache = false;
-    cur_level.hits = 0;
-    cur_level.misses = 0;
-    cur_level.total_access = 0;
+    cur_level.stats = {
+        n_access : 0,
+        last_addr : null,
+        last_parts : null,
+        last_r_w : null,
+        last_h_m : null,
+        n_misses : 0,
+        n_hits : 0
+    }
+    cur_level.next_cache = null;
     cur_level.data = {};
     simhw_internalState_reset("CACHE_MEMORY", cur_cache);
+    // Establish next level for prior caches
+    for (var i = cur_cache.length - 1; i >= 0; i--){
+        // If a instructions cache exist, establish both L1 next cache stop. If there is just one level, break.
+        if (cur_cache[i].id == "L1 Instructions"){
+            // If there are more than 1 level, establish L2 as the next cache for both L1 and L1I
+            if (cur_cache.length > 2){
+                cur_cache[i].next_cache = "L2";
+                cur_cache[i-1].next_cache = "L2";
+            }
+            break;
+        }
+        // Ignore the last level
+        if (i == cur_cache.length - 1){
+            continue
+        }
+        // Assign the next level
+        cur_cache[i].next_cache = cur_cache[i + 1].id;
+    }
 }
 
 function cache_memory_erase_level(level){
     var cur_cache = simhw_internalState("CACHE_MEMORY");
+    // When removing L1, remove all cache
     if (level == 1){
-        cur_cache = [];
+        cur_cache = []
+    // Else
     } else {
         var cur_level = cache_memory_get_level(level);
-        cur_cache.splice([cur_cache.indexOf(cur_level)], 1);
+        cur_level = cur_cache.splice([cur_cache.indexOf(cur_level)], 1)[0];
+        // Establish the next level attributes
+        for (var i = 0; i < cur_cache.length; i++){
+            if (cur_cache[i].next_cache === cur_level.id){
+                cur_cache[i].next_cache = null;
+            }
+        }
     }
-    console.log(cur_cache);
     simhw_internalState_reset("CACHE_MEMORY", cur_cache);
 }
 
@@ -3262,7 +3426,7 @@ sim.ep.internal_states.fire_visible = {
     databus: false,
     internalbus: false
 };
-sim.ep.internal_states.filter_states = ["REG_IR_DECO,col-12", "REG_IR,col-auto", "REG_PC,col-auto", "REG_MAR,col-auto", "REG_MBR,col-auto", "REG_RT1,col-auto", "REG_RT2,col-auto", "REG_RT3,col-auto", "REG_SR,col-auto", "REG_MICROADDR,col-auto"];
+sim.ep.internal_states.filter_states = ["REG_IR_DECO,col-12", "REG_MAR,col-12", "REG_IR,col-auto", "REG_PC,col-auto", "REG_MBR,col-auto", "REG_RT1,col-auto", "REG_RT2,col-auto", "REG_RT3,col-auto", "REG_SR,col-auto", "REG_MICROADDR,col-auto"];
 sim.ep.internal_states.filter_signals = ["A0,0", "B,0", "C,0", "SELA,5", "SELB,5", "SELC,2", "SELCOP,0", "MR,0", "MC,0", "C0,0", "C1,0", "C2,0", "C3,0", "C4,0", "C5,0", "C6,0", "C7,0", "T1,0", "T2,0", "T3,0", "T4,0", "T5,0", "T6,0", "T7,0", "T8,0", "T9,0", "T10,0", "T11,0", "M1,0", "M2,0", "M7,0", "MA,0", "MB,0", "SELP,0", "LC,0", "SE,0", "SIZE,0", "OFFSET,0", "BW,0", "R,0", "W,0", "TA,0", "TD,0", "IOR,0", "IOW,0", "TEST_I,0", "TEST_U,0"];
 sim.ep.internal_states.alu_flags = {
     flag_n: 0,
@@ -7354,12 +7518,14 @@ sim.ep.behaviors.MEM_READ = {
         var address = sim.ep.states[s_expr[1]].value;
         var dbvalue = sim.ep.states[s_expr[2]].value;
         var bw = sim.ep.signals[s_expr[3]].value;
-        var clk = get_value(sim.ep.states[s_expr[5]].value);
+        var clk = get_value(sim.ep.states[s_expr[5]]);
         sim.ep.signals[s_expr[4]].value = 0;
         var remain = get_var(sim.ep.internal_states.MP_wc);
         if (typeof sim.ep.events.mem[clk - 1] != "undefined" && sim.ep.events.mem[clk - 1] > 0) {
             remain = sim.ep.events.mem[clk - 1] - 1
         }
+        // First time accesing memory
+        var first_time = typeof sim.ep.events.mem[clk] == "undefined" ;
         sim.ep.events.mem[clk] = remain;
         if (remain > 0) {
             return
@@ -7374,10 +7540,10 @@ sim.ep.behaviors.MEM_READ = {
         dbvalue = main_memory_fusionvalues(dbvalue, value, bw);
         sim.ep.states[s_expr[2]].value = dbvalue >>> 0;
         sim.ep.signals[s_expr[4]].value = 1;
-        show_main_memory(sim.ep.internal_states.MP, address, full_redraw, false)
-        // Statistics
-        var val = get_value(sim.ep.states["MEM_ACC"]);
-        set_value(sim.ep.states["MEM_ACC"], val + 1);
+        show_main_memory(sim.ep.internal_states.MP, address, full_redraw, false);
+        if (first_time && (sim.ep.internal_states.CACHE_MEMORY.length > 0)) {
+            cache_memory_access("L1", address, "read", clk) ;
+        }
     },
     verbal: function(s_expr) {
         var verbal = "";
@@ -7405,12 +7571,13 @@ sim.ep.behaviors.MEM_WRITE = {
         var address = sim.ep.states[s_expr[1]].value;
         var dbvalue = sim.ep.states[s_expr[2]].value;
         var bw = sim.ep.signals[s_expr[3]].value;
-        var clk = get_value(sim.ep.states[s_expr[5]].value);
+        var clk = get_value(sim.ep.states[s_expr[5]]);
         sim.ep.signals[s_expr[4]].value = 0;
         var remain = get_var(sim.ep.internal_states.MP_wc);
         if (typeof sim.ep.events.mem[clk - 1] != "undefined" && sim.ep.events.mem[clk - 1] > 0) {
             remain = sim.ep.events.mem[clk - 1] - 1
         }
+        var first_time = typeof sim.ep.events.mem[clk] == "undefined" ;
         sim.ep.events.mem[clk] = remain;
         if (remain > 0) {
             return
@@ -7436,6 +7603,10 @@ sim.ep.behaviors.MEM_WRITE = {
         var valref = main_memory_set(sim.ep.internal_states.MP, address, melto);
         sim.ep.signals[s_expr[4]].value = 1;
         show_main_memory(sim.ep.internal_states.MP, address, full_redraw, true)
+        // cache
+        if (first_time && (sim.ep.internal_states.CACHE_MEMORY.length > 0)) {
+            cache_memory_access("L1", address, "write", clk) ;
+        }
         // Statistics
         var val = get_value(sim.ep.states["MEM_ACC"]);
         set_value(sim.ep.states["MEM_ACC"], val + 1);
@@ -13082,6 +13253,7 @@ sim.poc.behaviors.MEM_READ = {
         if (typeof sim.poc.events.mem[clk - 1] != "undefined" && sim.poc.events.mem[clk - 1] > 0) {
             remain = sim.poc.events.mem[clk - 1] - 1
         }
+        var first_time = typeof sim.poc.events.mem[clk] == "undefined";
         sim.poc.events.mem[clk] = remain;
         if (remain > 0) {
             return
@@ -28861,7 +29033,11 @@ function wepsim_init_states() {
             else showkey = '<span class="font-monospace">' + part1 + "</span>";
             if (part2.length > 0) showkey += '<span class="d-none d-sm-inline-flex font-monospace">' + part2 + "</span>"
         }
-        o1 += "<button type='button' class='btn py-0 px-1 mt-1 ms-1 " + divclass + "' " + "        style='border-color:#cecece; background-color:#f5f5f5' data-role='none' " + "        data-bs-toggle='popover-bottom' data-popover-content='" + s + "' data-container='body' " + "        id='rp" + s + "'>" + showkey + " <span class='badge badge-secondary text-dark' style='background-color:#CEECF5;' id='tbl_" + s + "'>" + "<div id='rf_" + s + "'>{{ computed_value }}</div>" + "</span>" + "</button>"
+        o1 += "<button type='button' class='btn py-0 px-1 mt-1 ms-1 " + divclass + "' " + "        style='border-color:#cecece; background-color:#f5f5f5' data-role='none' " + "        data-bs-toggle='popover-bottom' data-popover-content='" + s + "' data-container='body' " + "        id='rp" + s + "'>" + showkey + " <span class='badge badge-secondary text-dark' style='background-color:#CEECF5;' id='tbl_" + s + "'>" + "<div id='rf_" + s + "'>{{ computed_value }}</div>" + "</span>"
+        if (s == "REG_MAR"){
+            o1 += '<span class="font-monospace px-1 ms-1" id="REG_MAR_CACHE"></span>'
+        }
+        o1 +=  "</button>";
     }
     $("#states_ALL").html("<div class='d-flex flex-row flex-wrap justify-content-around justify-content-sm-between'>" + o1 + "</div>");
     var popover_cfg = {
@@ -29170,7 +29346,7 @@ function simcoreui_hw_states_popup(ahw_states, elto) {
     e = "<span style='text-align:left'>" + "<span data-langkey='name'>name</span>: " + elto + "<br>" + "<span data-langkey='value'>value</span>: " + "<span id='hw_state_value_" + elto + "' " + "      class='fw-bold'>" + elto_v + "</span><br>" + "<span data-langkey='default_value'>default_value</span>: " + elto_dv + "<br>" + "<span data-langkey='nbits'>nbits</span>: " + elto_nb + "<br>" + "<span data-langkey='visible'>visible</span>: " + elto_vi + "<button type='button' id='close' data-role='none' " + "        class='btn btn-sm btn-danger w-100 p-0 mt-2' " + "        onclick=wepsim_popovers_hide('.popover_hw');>" + "<span data-langkey='Close'>Close</span></button>" + "</span>";
     return e
 }
-
+//
 function simcoreui_hw_states_update(ahw) {
     var e = "";
     var elto_v = "";
@@ -29194,6 +29370,30 @@ function simcoreui_hw_states_update(ahw) {
                 $("." + id_strong).hide()
             }
             $("." + id_strong).attr("class", "t-ina col fw-normal " + id_strong)
+        }
+        // Update cache info
+        if (elto == "REG_MAR"){
+            var line = "";
+            var caches = simhw_internalState("CACHE_MEMORY");
+            var hit = false;
+            var addr = 0;
+            for (cache in caches){
+                var cache_data = simhw_internalState_get("CACHE_MEMORY", cache);
+                addr = cache_data.stats.last_addr;
+                if (cache_data.stats.last_h_m == "miss"){
+                    line += cache_data.id + ": MISS -> ";
+                }
+                else {
+                    hit = true;
+                    line += cache_data.id + ": HIT (" + addr.toString() + ")";
+                    break;
+                }
+            }
+            // Add memory tag if no hit
+            if (hit == false){
+                line += "MP (" + addr  + ")";
+            }
+            $("#REG_MAR_CACHE").html(line);
         }
     }
     return true
@@ -29330,6 +29530,7 @@ if (typeof window !== "undefined") {
     window.customElements.define("ws-io-info", ws_io_info)
 }
 
+var cur_selected_cache_index = 0;
 class ws_memory_cache extends ws_uielto
 {
     constructor()
@@ -29356,31 +29557,80 @@ class ws_memory_cache extends ws_uielto
           $(div_hash).html('');
           return
       }
-      render_cache_memory_table(1);
+      render_cache_memory_table;
     }
 }
 
-function render_cache_memory_table(level){
+function render_cache_memory_table(){
     var div_hash = "#mem_cache_info";
     var o1 = "";
     var colors = ["#FF99CC", "#A9D0F5", "#FACC2E"]
     if (typeof simhw_internalState("CACHE_MEMORY") == "undefined"){
         return
     }
-    o1 += '<div class="d-flex flex-row justify-content-center mt-25"><button type="button" class="btn btn-secondary"><-</button><p id="cache_info_name" class="mx-5 align-text-middle">CACHE 1</p>' +
-    '<button type="button" class="btn btn-secondary">-></button></div>';
-    o1 += '<table class="table table-sm mt-1 mr-1"><tr>';
-    let cache_data = cache_memory_get_level(level);
+    if (cur_selected_cache_index >= simhw_internalState("CACHE_MEMORY").length){
+        if (simhw_internalState("CACHE_MEMORY").length - 1 < 0){
+            return
+        }
+        else {
+            cur_selected_cache_index = simhw_internalState("CACHE_MEMORY").length - 1;
+        }
+    }
+    let cache_data = simhw_internalState("CACHE_MEMORY")[cur_selected_cache_index];
     if (cache_data == null){
         return;
     }
+    // Create table selector
+    o1 += '<div class="d-flex flex-row justify-content-center mt-25 w-100"><button type="button" class="btn btn-secondary" onclick="change_cache_memory_table(2)"' + (cur_selected_cache_index > 0 ? '' : 'disabled') + '><-</button><p id="cache_info_name" class="mx-5 align-text-middle text-center w-50">CACHE ' + cache_data.id + '</p>' +
+    '<button type="button" class="btn btn-secondary" onclick="change_cache_memory_table(1)"' + (cur_selected_cache_index < (simhw_internalState("CACHE_MEMORY").length - 1) ? '' : 'disabled') + '>-></button></div>';
+    // Create cache stats display
+    o1 += '<div class="row justify-content-center mt-25 ml-25 w-100"><div class="col text-center">Num access: ' + cache_data["stats"]["n_access"] + '</div><div class="col text-center">Num hits: ' + cache_data["stats"]["n_hits"] + '</div><div class="col text-center">Num misses: ' + cache_data["stats"]["n_misses"] + '</div></div>'
+    // Create cache table
+    o1 += '<table class="table table-sm mt-1 mr-1"><tr>';
     o1 += '<th class="col text-center border border-dark bg-light">Line</th><th class="col text-center border border-dark bg-light">Tag</th></tr>';
     for (var i = 1; i <= cache_data["num_lines"]; i++){
-        o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length] + '">' + i.toString() + '</th>' +
-        '<th class="col text-center border border-dark" style="background-color:' + colors[i % colors.length] + '">' + "".padStart(cache_data["placement_policy"]["tag_size"], "0") + '</th></tr>';
+        var line_address = "";
+        var color = 0;
+        switch (cache_data["placement_policy"]["type"]){
+            case "Direct Mapped":
+                if (typeof cache_data["data"][i-1] != "undefined"){
+                    var list = Object.keys(cache_data["data"][i-1]["tags"]);
+                    line_address = list[0];
+                }
+                color = colors[i % colors.length];
+                break;
+            case "Fully-associative":
+                if (typeof cache_data["data"][0] != "undefined"){
+                    var list = Object.keys(cache_data["data"][0]["tags"]);
+                    if (typeof list[i-1] != "undefined"){
+                        line_address = list[i-1];
+                    }
+                }
+                color = colors[i % colors.length];
+                break;
+            case "Set-associative":
+                var set = Math.floor((i-1) / cache_data["placement_policy"]["num_ways"]);
+                if (typeof cache_data["data"][set] != "undefined"){
+                    var block = (i-1) % cache_data["placement_policy"]["num_ways"];
+                    var list = Object.keys(cache_data["data"][set]["tags"]);
+                    if (typeof list[block] != "undefined"){
+                        line_address = list[block];
+                    }
+                }
+                color = colors[set % colors.length];
+                break;
+        }
+        o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + color + '">' + i.toString() + '</th>' +
+        '<th class="col text-center border border-dark" style="background-color:' + color + '">' + line_address + '</th></tr>';
     }
     o1 += '</table></div>';
     $(div_hash).html(o1);
+}
+
+function change_cache_memory_table(operation){
+    // 1: Sumar 2: Restar
+    cur_selected_cache_index += (operation == 1 ? 1 : -1);
+    render_cache_memory_table();
 }
 
 if (typeof window !== "undefined") {
@@ -29435,7 +29685,6 @@ function cache_config_build_ui(){
     }
     let caches = simhw_internalState("CACHE_MEMORY");
     for (cache in caches){
-      console.log(cache);
       let cache_data = simhw_internalState_get("CACHE_MEMORY", cache);
       let cache_level = cache_data["id"]
       o1 += '<div class="col border mt-1" id="#mem_cache_config_'+ cache_level + '"><p class="p-2 bg-light">Cache ' + cache_level + '</p><table class="table table-bordered"><tbody>' +
@@ -29451,7 +29700,7 @@ function cache_config_build_ui(){
       '<tr><td colspan="2">';
       if (cache_data["placement_policy"].type === "Direct Mapped"){
         o1 += '<div class="row w-80 h-90 mx-auto"><div class="row"><div class="col text-center border border-dark w-25">tag: ' + cache_data["placement_policy"].tag_size + '</div>' +
-        '<div class="col text-center border border-dark w-25">index: ' + cache_data["placement_policy"].index_size + '</div>' +
+        '<div class="col text-center border border-dark w-25">index: ' + cache_data["placement_policy"].set_size + '</div>' +
         '<div class="col text-center border border-dark w-50">offset: ' + cache_data["placement_policy"].offset_size + '</div></div></div></td></tr>';
       }
       else if (cache_data["placement_policy"].type === "Fully-associative"){
@@ -29473,7 +29722,7 @@ function cache_config_build_ui(){
     // Insertar código de cajitas de opciones de caché
     o1 += '</div></div>'
     $(div_hash).html(o1);
-    render_cache_memory_table("L1");
+    render_cache_memory_table();
 }
 
 function cache_config_add_level(){
@@ -29518,7 +29767,7 @@ function cache_config_change(obj, level){
     else if($(obj).hasClass("cache_memory_size")){
         cache_memory_set_attribute(level, "cache_size", parseInt(obj.value));
     }
-    var num_lines = Math.round((cache_level["cache_size"]*(1024))/(cache_level["line_size"]*8));
+    var num_lines = Math.floor((cache_level["cache_size"]*(1024))/(cache_level["line_size"]));
     cache_memory_set_attribute(level, "num_lines", num_lines);
     if($(obj).hasClass("cache_memory_placement_policy")){
         cache_memory_set_attribute(level, "placement_policy", cache_memory_placement_policy_attr(obj.value, cache_level));
