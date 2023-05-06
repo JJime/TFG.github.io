@@ -2510,6 +2510,22 @@ function cache_memory_update_stats(memory, address, parts, r_w, m_h, clock_times
     memory.data[parts.set].tags[parts.tag].timestamp = clock_timestamp
 }
 
+function cache_memory_update_access_time(){
+    var cache_data = simhw_internalState("CACHE_MEMORY")
+    for (var cache = 0; cache < cache_data.length; cache++){
+        var memory = cache_data[cache];
+        var keys = Object.keys(memory.data);
+        var data = memory.data
+        for (var i = 0; i < keys.length; i++){
+            var set = keys[i];
+            var tags = Object.keys(data[set].tags);
+            for (var j = 0; j < tags.length; j++){
+                data[set].tags[tags[j]].last_access++;
+            }
+        }
+    }
+}
+
 function cache_memory_select_victim(memory, parts) {
     var keys = Object.keys(memory.data[parts.set].tags);
     var tag_victim = 0;
@@ -2520,6 +2536,15 @@ function cache_memory_select_victim(memory, parts) {
             if (tag_naccess > memory.data[parts.set].tags[keys[i]].n_access) {
                 tag_victim = keys[i];
                 tag_naccess = memory.data[parts.set].tags[tag_victim].n_access
+            }
+        }
+    } else if (memory["replacement_policy"]["type"] == "LRU") {
+        tag_victim = keys[0];
+        var tag_last_access = memory.data[parts.set].tags[tag_victim].last_access;
+        for (var i = 1; i < keys.length; i++) {
+            if (tag_last_access > memory.data[parts.set].tags[keys[i]].last_access) {
+                tag_victim = keys[i];
+                tag_last_access = memory.data[parts.set].tags[tag_victim].last_access;
             }
         }
     } else if (memory["replacement_policy"]["type"] == "FIFO") {
@@ -2548,7 +2573,7 @@ function cache_memory_split(memory, address) {
         parts.tag = (address & mask_tag) >>> 32 - memory["placement_policy"]["tag_size"];
     }
     if (typeof memory["placement_policy"]["set_size"] != "undefined"){
-        var mask_set = (memory["num_lines"] - 1) >>> 0;
+        var mask_set = ((memory["placement_policy"]["type"] == "Set-associative" ? memory["num_lines"]/memory["placement_policy"]["num_ways"] : memory["num_lines"]) - 1) >>> 0;
         mask_set = mask_set << memory["placement_policy"]["offset_size"] >>> 0;
         parts.set = (address & mask_set) >>> memory["placement_policy"]["offset_size"];
     }
@@ -2581,8 +2606,10 @@ function cache_memory_access(memory, address, r_w, clock_timestamp) {
     }
     // CASE HIT
     if (typeof cache_level.data[parts.set].tags[parts.tag] != "undefined" && cache_level.data[parts.set].tags[parts.tag].valid == 1) {
+        cache_level.data[parts.set].tags[parts.tag].last_access = 0;
         cache_memory_update_stats(cache_level, address, parts, r_w, "hit", clock_timestamp);
         render_cache_memory_table();
+        cache_memory_update_access_time();
         return true
     }
     // ON NO HIT
@@ -2595,7 +2622,8 @@ function cache_memory_access(memory, address, r_w, clock_timestamp) {
     cache_level.data[parts.set].tags[parts.tag] = {
         n_access: 0,
         valid: 1,
-        dirty: 0
+        dirty: 0,
+        last_access : 0,
     };
     cache_level.data[parts.set].number_tags++;
     cache_memory_update_stats(cache_level, address, parts, r_w, "miss", clock_timestamp);
@@ -2604,6 +2632,9 @@ function cache_memory_access(memory, address, r_w, clock_timestamp) {
     // Access next cache
     if (next_cache != null) {
         cache_memory_access(next_cache, address, r_w, clock_timestamp);
+    }
+    else {
+        cache_memory_update_access_time();
     }
     render_cache_memory_table();
     return false
@@ -2681,11 +2712,16 @@ function cache_memory_replacement_policy_attr(type){
                 "type" : "LFU"
             }
             break;
+        case "LRU":
+            attr = {
+                "type" : "LRU"
+            }
+            break;
         case "FIFO":
             attr = {
                 "type" : "FIFO"
             }
-            break;
+            break
     }
     return attr;
 }
@@ -17063,6 +17099,17 @@ i18n.eltos.gui.es = {
     Stop: "Parar",
     Record: "Grabar",
     Registers: "Registros",
+    "Cache-Memory": "Memoria Cache",
+    "Cache-Configuration": "Configuración de cache",
+    "Cache-Size": "Tamaño de memoria (KB)",
+    "Cache-Line-Size": "Tamaño de línea (Bytes)",
+    "Placement-Policy": "Política de emplazamiento",
+    "Replacement-Policy": "Política de reemplazo",
+    "Direct-Mapped": "Directa",
+    "Fully-Associative": "Asociativa",
+    "Set-Associative": "Asociative por conjuntos",
+    "Cache-Num-Ways": "Número de vías",
+    "Cache-Split-Data": "Separar cache de datos e instrucciones",
     "Control Memory": "Memoria de Control",
     Stats: "Estad&iacute;sticas",
     Memory: "Memoria",
@@ -29373,19 +29420,30 @@ function simcoreui_hw_states_update(ahw) {
         }
         // Update cache info
         if (elto == "REG_MAR"){
-            var line = "";
+            var line = "<br>";
+            var miss_line = "";
             var caches = simhw_internalState("CACHE_MEMORY");
             var hit = false;
-            var addr = 0;
+            var addr = sim.active.states.REG_MAR.value.state.value;
             for (cache in caches){
                 var cache_data = simhw_internalState_get("CACHE_MEMORY", cache);
-                addr = cache_data.stats.last_addr;
+                
+                // If current cache level is 1, there´s an instructions cache and addr is instruction, ignore current cache
+                if (cache_data.id == "L1" && cache_data.split_cache == true && segments_addr_within_text(addr) == true){
+                    continue;
+                }
+                else if (cache_data.id == "L1 Instructions" && segments_addr_within_text(addr) == false){
+                    continue;
+                }
+                //current cache miss
                 if (cache_data.stats.last_h_m == "miss"){
                     line += cache_data.id + ": MISS -> ";
+                    miss_line += cache_data.id + cache_memory_get_last_access_string(cache_data) + "<br>";
                 }
+                //current cache hit
                 else {
                     hit = true;
-                    line += cache_data.id + ": HIT (" + addr.toString() + ")";
+                    line += cache_data.id + ": HIT " + cache_memory_get_last_access_string(cache_data) + " ";
                     break;
                 }
             }
@@ -29393,10 +29451,28 @@ function simcoreui_hw_states_update(ahw) {
             if (hit == false){
                 line += "MP (" + addr  + ")";
             }
-            $("#REG_MAR_CACHE").html(line);
+            $("#REG_MAR_CACHE").html(line + "<br>" + miss_line);
         }
     }
     return true
+}
+
+function cache_memory_get_last_access_string(cache_data){
+    var miss_line = "";
+    miss_line += "(";
+    switch (cache_data.placement_policy.type){
+        case "Direct Mapped":
+            miss_line += "Tag: " + cache_data.stats.last_parts.tag + " Line: " + (cache_data.stats.last_parts.set + 1);
+            break;
+        case "Fully-associative": 
+            miss_line += "Tag: " + cache_data.stats.last_parts.tag;
+            break;
+        case "Set-associative":
+            miss_line += "Tag: " + cache_data.stats.last_parts.tag + " Set: " + (cache_data.stats.last_parts.set + 1);
+            break;
+    }
+    miss_line += ")"
+    return miss_line;
 }
 
 function simcoreui_hw_behaviors_init(ahw, framed) {
@@ -29557,73 +29633,79 @@ class ws_memory_cache extends ws_uielto
           $(div_hash).html('');
           return
       }
-      render_cache_memory_table;
+      render_cache_memory_table();
     }
 }
 
 function render_cache_memory_table(){
     var div_hash = "#mem_cache_info";
     var o1 = "";
-    var colors = ["#FF99CC", "#A9D0F5", "#FACC2E"]
-    if (typeof simhw_internalState("CACHE_MEMORY") == "undefined"){
-        return
+    var colors = ["#FF99CC", "#A9D0F5", "#FACC2E"];
+    console.log(simhw_internalState("CACHE_MEMORY").length)
+    if (typeof simhw_internalState("CACHE_MEMORY") == "undefined" || simhw_internalState("CACHE_MEMORY").length == 0){
+        o1 += '<div class="h-100 w-100 justify-content-center text-center align-text-middle align-middle"><span class="align-middle">No hay ninguna memoria caché creada, para añadir una, ve a <b>Cache Configuration</b></span></div>';
     }
-    if (cur_selected_cache_index >= simhw_internalState("CACHE_MEMORY").length){
-        if (simhw_internalState("CACHE_MEMORY").length - 1 < 0){
-            return
-        }
-        else {
+    else {
+        if (cur_selected_cache_index >= simhw_internalState("CACHE_MEMORY").length){
             cur_selected_cache_index = simhw_internalState("CACHE_MEMORY").length - 1;
         }
-    }
-    let cache_data = simhw_internalState("CACHE_MEMORY")[cur_selected_cache_index];
-    if (cache_data == null){
-        return;
-    }
-    // Create table selector
-    o1 += '<div class="d-flex flex-row justify-content-center mt-25 w-100"><button type="button" class="btn btn-secondary" onclick="change_cache_memory_table(2)"' + (cur_selected_cache_index > 0 ? '' : 'disabled') + '><-</button><p id="cache_info_name" class="mx-5 align-text-middle text-center w-50">CACHE ' + cache_data.id + '</p>' +
-    '<button type="button" class="btn btn-secondary" onclick="change_cache_memory_table(1)"' + (cur_selected_cache_index < (simhw_internalState("CACHE_MEMORY").length - 1) ? '' : 'disabled') + '>-></button></div>';
-    // Create cache stats display
-    o1 += '<div class="row justify-content-center mt-25 ml-25 w-100"><div class="col text-center">Num access: ' + cache_data["stats"]["n_access"] + '</div><div class="col text-center">Num hits: ' + cache_data["stats"]["n_hits"] + '</div><div class="col text-center">Num misses: ' + cache_data["stats"]["n_misses"] + '</div></div>'
-    // Create cache table
-    o1 += '<table class="table table-sm mt-1 mr-1"><tr>';
-    o1 += '<th class="col text-center border border-dark bg-light">Line</th><th class="col text-center border border-dark bg-light">Tag</th></tr>';
-    for (var i = 1; i <= cache_data["num_lines"]; i++){
-        var line_address = "";
-        var color = 0;
-        switch (cache_data["placement_policy"]["type"]){
-            case "Direct Mapped":
-                if (typeof cache_data["data"][i-1] != "undefined"){
-                    var list = Object.keys(cache_data["data"][i-1]["tags"]);
-                    line_address = list[0];
-                }
-                color = colors[i % colors.length];
-                break;
-            case "Fully-associative":
-                if (typeof cache_data["data"][0] != "undefined"){
-                    var list = Object.keys(cache_data["data"][0]["tags"]);
-                    if (typeof list[i-1] != "undefined"){
-                        line_address = list[i-1];
-                    }
-                }
-                color = colors[i % colors.length];
-                break;
-            case "Set-associative":
-                var set = Math.floor((i-1) / cache_data["placement_policy"]["num_ways"]);
-                if (typeof cache_data["data"][set] != "undefined"){
-                    var block = (i-1) % cache_data["placement_policy"]["num_ways"];
-                    var list = Object.keys(cache_data["data"][set]["tags"]);
-                    if (typeof list[block] != "undefined"){
-                        line_address = list[block];
-                    }
-                }
-                color = colors[set % colors.length];
-                break;
+        let cache_data = simhw_internalState("CACHE_MEMORY")[cur_selected_cache_index];
+        // Create table selector
+        o1 += '<div class="d-flex flex-row justify-content-center mt-25 w-100"><button type="button" class="btn btn-secondary" onclick="change_cache_memory_table(2)"' + (cur_selected_cache_index > 0 ? '' : 'disabled') + '><-</button><p id="cache_info_name" class="mx-5 align-text-middle text-center w-50">CACHE ' + cache_data.id + '</p>' +
+        '<button type="button" class="btn btn-secondary" onclick="change_cache_memory_table(1)"' + (cur_selected_cache_index < (simhw_internalState("CACHE_MEMORY").length - 1) ? '' : 'disabled') + '>-></button></div>';
+        // Create cache stats display
+        o1 += '<div class="row justify-content-center mt-25 ml-25 w-100"><div class="col text-center">Num access: ' + cache_data["stats"]["n_access"] + '</div>' +
+        '<div class="col text-center">Num hits: ' + cache_data["stats"]["n_hits"] + ' (' + ((cache_data["stats"]["n_hits"]/cache_data["stats"]["n_access"])*100).toFixed(2) + '%)</div>' +
+        '<div class="col text-center">Num misses: ' + cache_data["stats"]["n_misses"] + ' (' + ((cache_data["stats"]["n_misses"]/cache_data["stats"]["n_access"])*100).toFixed(2) + '%)</div></div>'
+        // Create cache table
+        o1 += '<table class="table table-sm mt-1 mr-1"><tr>';
+        if (cache_data["placement_policy"].type == "Set-associative"){
+            o1 += '<th class="col text-center border border-dark bg-light">Set</th>'
+        } else {
+            o1 += '<th class="col text-center border border-dark bg-light">Line</th>'
         }
-        o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + color + '">' + i.toString() + '</th>' +
-        '<th class="col text-center border border-dark" style="background-color:' + color + '">' + line_address + '</th></tr>';
+        o1 += '<th class="col text-center border border-dark bg-light">Tag</th></tr>';
+        for (var i = 1; i <= cache_data["num_lines"]; i++){
+            var line_address = "";
+            var color = 0;
+            switch (cache_data["placement_policy"]["type"]){
+                case "Direct Mapped":
+                    if (typeof cache_data["data"][i-1] != "undefined"){
+                        var list = Object.keys(cache_data["data"][i-1]["tags"]);
+                        line_address = list[0];
+                    }
+                    color = colors[i % colors.length];
+                    break;
+                case "Fully-associative":
+                    if (typeof cache_data["data"][0] != "undefined"){
+                        var list = Object.keys(cache_data["data"][0]["tags"]);
+                        if (typeof list[i-1] != "undefined"){
+                            line_address = list[i-1];
+                        }
+                    }
+                    color = colors[i % colors.length];
+                    break;
+                case "Set-associative":
+                    var set = Math.floor((i-1) / cache_data["placement_policy"]["num_ways"]);
+                    if (typeof cache_data["data"][set] != "undefined"){
+                        var block = (i-1) % cache_data["placement_policy"]["num_ways"];
+                        var list = Object.keys(cache_data["data"][set]["tags"]);
+                        if (typeof list[block] != "undefined"){
+                            line_address = list[block];
+                        }
+                    }
+                    color = colors[set % colors.length];
+                    break;
+            }
+            if (cache_data["placement_policy"]["type"] == "Set-associative"){
+                o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + color + '">' + (Math.floor((i - 1)/cache_data["placement_policy"]["num_ways"]) + 1).toString() + '</th>';
+            } else {
+                o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + color + '">' + i.toString() + '</th>';
+            }
+            o1 += '<th class="col text-center border border-dark" style="background-color:' + color + '">' + line_address + '</th></tr>';
+        }
+        o1 += '</table></div>';
     }
-    o1 += '</table></div>';
     $(div_hash).html(o1);
 }
 
@@ -29688,15 +29770,16 @@ function cache_config_build_ui(){
       let cache_data = simhw_internalState_get("CACHE_MEMORY", cache);
       let cache_level = cache_data["id"]
       o1 += '<div class="col border mt-1" id="#mem_cache_config_'+ cache_level + '"><p class="p-2 bg-light">Cache ' + cache_level + '</p><table class="table table-bordered"><tbody>' +
-      '<tr><td>Cache size (KB)</td><td><input type="number" min:1 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
-      '<tr><td>Line Size (Bytes)</td><td><input type="number" min:1 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
-      '<tr><td>Replacement policy</td><td><div class="form-group"><select class="form-control cache_memory_replacement_policy" id="#cache_' + cache_level + '_replacement_policy" value=' + cache_data["replacement_policy"].type + ' onchange="cache_config_change(this, ' + cache + ')">' +
+      '<tr><td><span data-langkey="Cache-Size">Cache size (KB)</span></td><td><input type="number" min:1 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
+      '<tr><td><span data-langkey=\'Cache-Line-Size\'>Line Size (Bytes)</span></td><td><input type="number" min:1 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
+      '<tr><td><span data-langkey=\'Replacement-Policy\'>Replacement policy</span></td><td><div class="form-group"><select class="form-control cache_memory_replacement_policy" id="#cache_' + cache_level + '_replacement_policy" value=' + cache_data["replacement_policy"].type + ' onchange="cache_config_change(this, ' + cache + ')">' +
       '<option value="LFU" ' + (cache_data["replacement_policy"].type.localeCompare("LFU") == 0 ? 'selected' : '') + ' >LFU</option>' +
+      '<option value="LRU" ' + (cache_data["replacement_policy"].type.localeCompare("LRU") == 0 ? 'selected' : '') + ' >LRU</option>' +  
       '<option value="FIFO" ' + (cache_data["replacement_policy"].type.localeCompare("FIFO") == 0 ? 'selected' : '') + '>FIFO</option>' + 
-      '<tr><td>Placement policy</td><td><div class="form-group"><select class="form-control cache_memory_placement_policy" id="#cache_' + cache_level + '_policy" value=' + cache_data["placement_policy"].type + ' onchange="cache_config_change(this, ' + cache + ')">' +
-      '<option value="Direct Mapped" ' + (cache_data["placement_policy"].type.localeCompare("Direct Mapped") == 0 ? 'selected' : '') + ' >Direct Mapped</option>'+
-      '<option value="Fully-associative" ' + (cache_data["placement_policy"].type.localeCompare("Fully-associative") == 0 ? 'selected' : '') + ' >Fully-associative</option>' +
-      '<option value="Set-associative" ' + (cache_data["placement_policy"].type.localeCompare("Set-associative") == 0 ? 'selected' : '') + ' >Set-associative</option></select></div></td></tr>' +
+      '<tr><td><span data-langkey=\'Placement-Policy\'>Placement policy</span></td><td><div class="form-group"><select class="form-control cache_memory_placement_policy" id="#cache_' + cache_level + '_policy" value=' + cache_data["placement_policy"].type + ' onchange="cache_config_change(this, ' + cache + ')">' +
+      '<option value="Direct Mapped" ' + (cache_data["placement_policy"].type.localeCompare("Direct Mapped") == 0 ? 'selected' : '') + ' ><span data-langkey=\'Direct-Mapped\'>Direct Mapped</span></option>'+
+      '<option value="Fully-associative" ' + (cache_data["placement_policy"].type.localeCompare("Fully-associative") == 0 ? 'selected' : '') + ' ><span data-langkey=\'Fully-Associative\'>Fully-associative</span></option>' +
+      '<option value="Set-associative" ' + (cache_data["placement_policy"].type.localeCompare("Set-associative") == 0 ? 'selected' : '') + ' ><span data-langkey=\'Set-Associative\'>Set-associative</span></option></select></div></td></tr>' +
       '<tr><td colspan="2">';
       if (cache_data["placement_policy"].type === "Direct Mapped"){
         o1 += '<div class="row w-80 h-90 mx-auto"><div class="row"><div class="col text-center border border-dark w-25">tag: ' + cache_data["placement_policy"].tag_size + '</div>' +
@@ -29711,11 +29794,11 @@ function cache_config_build_ui(){
         o1 += '<div class="row w-80 h-90 mx-auto"><div class="row"><div class="col text-center border border-dark w-25">tag: ' + cache_data["placement_policy"].tag_size + '</div>' +
         '<div class="col text-center border border-dark w-25">set: ' + cache_data["placement_policy"].set_size + '</div>' +
         '<div class="col text-center border border-dark w-50">offset: ' + cache_data["placement_policy"].offset_size + '</div></div></div>'
-        o1 += '</td></tr><tr><td>Number of ways</td><td><input type="number" min:1 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>';
+        o1 += '</td></tr><tr><td><span data-langkey=\'Cache-Num-Ways\'>Number of ways</span></td><td><input type="number" min:1 class="cache_memory_policy_num_ways" value=' + cache_data["placement_policy"].num_ways + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>';
       }
       // Add split cache checkbox
       if (cache_data["id"] == "L1"){
-        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input cache_memory_split_instruction"' + (cache_data["split_cache"] == true ? 'checked' : '') + ' onchange="cache_config_change(this, ' + cache + ')">Split data and instructions</label></div></td></tr>';
+        o1 += '<tr><td><div class="form-check"><label><input type="checkbox" class="form-check-input cache_memory_split_instruction"' + (cache_data["split_cache"] == true ? 'checked' : '') + ' onchange="cache_config_change(this, ' + cache + ')"><span data-langkey=\'Cache-Split-Data\'>Split data and instructions</span></label></div></td></tr>';
       }
       o1 += '</tbody></table></div>';
     }
