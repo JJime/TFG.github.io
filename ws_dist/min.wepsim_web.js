@@ -2500,6 +2500,7 @@ function cache_memory_update_stats(memory, address, parts, r_w, m_h, clock_times
     memory.stats.last_h_m = m_h;
     if (m_h == "miss") {
         memory.stats.n_misses++
+        memory.data[parts.set].tags[parts.tag].timestamp = clock_timestamp
     } else {
         memory.stats.n_hits++
     }
@@ -2507,7 +2508,6 @@ function cache_memory_update_stats(memory, address, parts, r_w, m_h, clock_times
     if (r_w == "write") {
         memory.data[parts.set].tags[parts.tag].dirty = 1
     }
-    memory.data[parts.set].tags[parts.tag].timestamp = clock_timestamp
 }
 
 function cache_memory_update_access_time(){
@@ -2529,7 +2529,7 @@ function cache_memory_update_access_time(){
 function cache_memory_select_victim(memory, parts) {
     var keys = Object.keys(memory.data[parts.set].tags);
     var tag_victim = 0;
-    if (memory["replacement_policy"]["type"] == "LFU") {
+    if (memory["replacement_policy"] == "LFU") {
         tag_victim = keys[0];
         var tag_naccess = memory.data[parts.set].tags[tag_victim].n_access;
         for (var i = 1; i < keys.length; i++) {
@@ -2538,16 +2538,16 @@ function cache_memory_select_victim(memory, parts) {
                 tag_naccess = memory.data[parts.set].tags[tag_victim].n_access
             }
         }
-    } else if (memory["replacement_policy"]["type"] == "LRU") {
+    } else if (memory["replacement_policy"] == "LRU") {
         tag_victim = keys[0];
         var tag_last_access = memory.data[parts.set].tags[tag_victim].last_access;
         for (var i = 1; i < keys.length; i++) {
-            if (tag_last_access > memory.data[parts.set].tags[keys[i]].last_access) {
+            if (tag_last_access < memory.data[parts.set].tags[keys[i]].last_access) {
                 tag_victim = keys[i];
                 tag_last_access = memory.data[parts.set].tags[tag_victim].last_access;
             }
         }
-    } else if (memory["replacement_policy"]["type"] == "FIFO") {
+    } else if (memory["replacement_policy"] == "FIFO") {
         tag_victim = keys[0];
         var tag_stamp = memory.data[parts.set].tags[tag_victim].timestamp;
         for (var i = 1; i < keys.length; i++) {
@@ -2578,7 +2578,7 @@ function cache_memory_split(memory, address) {
         parts.set = (address & mask_set) >>> memory["placement_policy"]["offset_size"];
     }
     if (typeof memory["placement_policy"]["offset_size"] != "undefined"){
-        var mask_off = Math.pow(2, memory["placement_policy"]["offset_size"]) - 1 >>> 0;
+        var mask_off = memory["line_size"] - 1 >>> 0;
         parts.offset = address & mask_off;
     }
     return parts
@@ -2613,12 +2613,16 @@ function cache_memory_access(memory, address, r_w, clock_timestamp) {
         return true
     }
     // ON NO HIT
-    if (typeof cache_level.data[parts.set].number_tags > 3){
-        var tag_victim = cache_memory_select_victim(cache_level, parts.set);
-        cache_level.data[parts.set].tags[tag_victim].valid = 0;
+    // Make room if necessary
+    if ((cache_level.placement_policy.type == "Fully-associative" && cache_level.data[0].number_tags == cache_level.num_lines) ||
+        (cache_level.placement_policy.type == "Set-associative" && cache_level.data[parts.set].number_tags == cache_level.placement_policy.num_ways)){
+        var tag_victim = cache_memory_select_victim(cache_level, parts);
+        console.log(parts.set);
+        console.log(tag_victim);
+        delete cache_level.data[parts.set].tags[tag_victim];
         cache_level.data[parts.set].number_tags--;
     }
-
+    // Place block in cache
     cache_level.data[parts.set].tags[parts.tag] = {
         n_access: 0,
         valid: 1,
@@ -2704,28 +2708,6 @@ function cache_memory_placement_policy_calc_values(cache_data){
     cache_memory_set_attribute(cache_data["id"], "placement_policy", attr);
 }
 
-function cache_memory_replacement_policy_attr(type){
-    var attr;
-    switch (type){
-        case "LFU":
-            attr = {
-                "type" : "LFU"
-            }
-            break;
-        case "LRU":
-            attr = {
-                "type" : "LRU"
-            }
-            break;
-        case "FIFO":
-            attr = {
-                "type" : "FIFO"
-            }
-            break
-    }
-    return attr;
-}
-
 function cache_memory_add_level(level){
     var cur_cache = simhw_internalState("CACHE_MEMORY");
     var cur_level;
@@ -2744,7 +2726,7 @@ function cache_memory_add_level(level){
     cur_level.num_lines = Math.round((cur_level["cache_size"]*(1024))/(cur_level["line_size"]));
     cur_level.placement_policy = cache_memory_placement_policy_attr("Direct Mapped", cur_level);
     cache_memory_placement_policy_calc_values(cur_level);
-    cur_level.replacement_policy = cache_memory_replacement_policy_attr("LFU");
+    cur_level.replacement_policy = "LFU";
     cur_level.split_cache = false;
     cur_level.stats = {
         n_access : 0,
@@ -2814,11 +2796,6 @@ function cache_memory_set_attribute(level, attribute, value){
 function cache_memory_policy_set_attribute(level, attribute, value){
     var cache_level = cache_memory_get_level(level);
     cache_level["placement_policy"][attribute] = value;
-}
-
-function cache_memory_replacement_policy_set_attribute(level, attribute, value){
-    var cache_level = cache_memory_get_level(level);
-    cache_level["replacement_policy"][attribute] = value;
 }
 
 function get_deco_from_pc(pc) {
@@ -29637,14 +29614,16 @@ class ws_memory_cache extends ws_uielto
     }
 }
 
-function render_cache_memory_table(){
+async function render_cache_memory_table(){
     var div_hash = "#mem_cache_info";
     var o1 = "";
     var colors = ["#FF99CC", "#A9D0F5", "#FACC2E"];
-    console.log(simhw_internalState("CACHE_MEMORY").length)
+    // Empty configuration
     if (typeof simhw_internalState("CACHE_MEMORY") == "undefined" || simhw_internalState("CACHE_MEMORY").length == 0){
         o1 += '<div class="h-100 w-100 justify-content-center text-center align-text-middle align-middle"><span class="align-middle">No hay ninguna memoria caché creada, para añadir una, ve a <b>Cache Configuration</b></span></div>';
+        $(div_hash).html(o1);
     }
+    // Data, show status
     else {
         if (cur_selected_cache_index >= simhw_internalState("CACHE_MEMORY").length){
             cur_selected_cache_index = simhw_internalState("CACHE_MEMORY").length - 1;
@@ -29658,55 +29637,154 @@ function render_cache_memory_table(){
         '<div class="col text-center">Num hits: ' + cache_data["stats"]["n_hits"] + ' (' + ((cache_data["stats"]["n_hits"]/cache_data["stats"]["n_access"])*100).toFixed(2) + '%)</div>' +
         '<div class="col text-center">Num misses: ' + cache_data["stats"]["n_misses"] + ' (' + ((cache_data["stats"]["n_misses"]/cache_data["stats"]["n_access"])*100).toFixed(2) + '%)</div></div>'
         // Create cache table
-        o1 += '<table class="table table-sm mt-1 mr-1"><tr>';
+        o1 += '<table class="table table-sm mt-1 mr-1" id="cache_table"><tr>';
         if (cache_data["placement_policy"].type == "Set-associative"){
             o1 += '<th class="col text-center border border-dark bg-light">Set</th>'
         } else {
             o1 += '<th class="col text-center border border-dark bg-light">Line</th>'
         }
         o1 += '<th class="col text-center border border-dark bg-light">Tag</th></tr>';
-        for (var i = 1; i <= cache_data["num_lines"]; i++){
-            var line_address = "";
-            var color = 0;
-            switch (cache_data["placement_policy"]["type"]){
-                case "Direct Mapped":
-                    if (typeof cache_data["data"][i-1] != "undefined"){
-                        var list = Object.keys(cache_data["data"][i-1]["tags"]);
-                        line_address = list[0];
-                    }
-                    color = colors[i % colors.length];
-                    break;
-                case "Fully-associative":
-                    if (typeof cache_data["data"][0] != "undefined"){
-                        var list = Object.keys(cache_data["data"][0]["tags"]);
-                        if (typeof list[i-1] != "undefined"){
-                            line_address = list[i-1];
+        // DRAW DATA
+        var index = 1;
+        var line_address = 0;
+        var distance_to_next = 0;
+        var max_distance_between_data = 0;
+        // Draw Fully-Associative
+        if (cache_data["placement_policy"]["type"] == "Fully-associative"){
+            max_distance_between_data = 5;
+            if (typeof cache_data["data"][0] != "undefined"){
+                var list = Object.keys(cache_data["data"][0]["tags"]);
+                // Draw all data
+                for (var z = 0; z <= list.length - 1; z++){
+                    line_address = list[z];
+                    color = colors[index % colors.length];
+                    o1 += cache_memory_table_draw_row(index, line_address, color);
+                    index += 1;
+                }
+            }
+        }
+        // Draw Direct and set-associative
+        else {
+            var list = Object.entries(cache_data["data"]);
+            var list_index = 0;
+            var next_block = 0;
+            max_distance_between_data = (cache_data["placement_policy"]["type"] == "Set-associative" ? 3 : 5);
+            while (typeof list[list_index] != "undefined"){
+                //There are objects left on the list"
+                distance_to_next = Number.parseInt(list[list_index][0]) - index + 1;
+                next_block = Number.parseInt(list[list_index][0]);
+                // Distance to next is smaller than max_distance_between data
+                if (distance_to_next <= max_distance_between_data){
+                    for(index; index <= next_block + 1; index++){
+                        // Set-associative
+                        if (cache_data["placement_policy"]["type"] == "Set-associative"){
+                            var tags = (typeof cache_data["data"][index - 1] != "undefined" ? Object.keys(cache_data["data"][index - 1]["tags"]) : []);
+                            for(var z = 0; z < cache_data["placement_policy"]["num_ways"]; z++){
+                                line_address = (typeof tags[z] != "undefined" ? tags[z] : "");
+                                color = colors[index % colors.length];
+                                o1 += cache_memory_table_draw_row(index, line_address, color);
+                            }
+                        }
+                        // Direct-Mapped
+                        else {
+                            line_address = (index == next_block + 1 ? Object.keys(cache_data["data"][next_block]["tags"])[0] : "");
+                            color = colors[index % colors.length];
+                            o1 += cache_memory_table_draw_row(index, line_address, color);
                         }
                     }
-                    color = colors[i % colors.length];
-                    break;
-                case "Set-associative":
-                    var set = Math.floor((i-1) / cache_data["placement_policy"]["num_ways"]);
-                    if (typeof cache_data["data"][set] != "undefined"){
-                        var block = (i-1) % cache_data["placement_policy"]["num_ways"];
-                        var list = Object.keys(cache_data["data"][set]["tags"]);
-                        if (typeof list[block] != "undefined"){
-                            line_address = list[block];
+                }
+                // Distance to next is bigger than max_distance_between_data
+                else {
+                    for(var z = 0; z < (max_distance_between_data + 2); z++){
+                        if (cache_data["placement_policy"]["type"] == "Set-associative"){
+                            var tags = (typeof cache_data["data"][index - 1] != "undefined" ? Object.keys(cache_data["data"][index - 1]["tags"]) : []);
+                            if (z != max_distance_between_data){
+                                for (var t = 0; t < cache_data["placement_policy"]["num_ways"]; t++){
+                                    if (z == max_distance_between_data + 1){
+                                        line_address = (typeof tags[t] != "undefined" ? tags[t] : "");
+                                    } else{
+                                        line_address = "";
+                                    }
+                                    color = colors[(index + z) % colors.length];
+                                    o1 += cache_memory_table_draw_row(index, line_address, color);
+                                }
+                                index += 1;
+                            }
+                            else {
+                                o1 += cache_memory_table_draw_row(0, 0, "", true)
+                                index += distance_to_next - max_distance_between_data;
+                            }
+                        }
+                        else {
+                            line_address = (z == max_distance_between_data + 1 ? Object.keys(cache_data["data"][next_block]["tags"])[0] : "");
+                            color = colors[index % colors.length];
+                            o1 += cache_memory_table_draw_row(index, line_address, color, (z==max_distance_between_data - 1 ? true : false));
+                            index += (z == max_distance_between_data - 1 ? distance_to_next - max_distance_between_data : 1);
                         }
                     }
-                    color = colors[set % colors.length];
-                    break;
+                }
+                list_index += 1;
             }
-            if (cache_data["placement_policy"]["type"] == "Set-associative"){
-                o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + color + '">' + (Math.floor((i - 1)/cache_data["placement_policy"]["num_ways"]) + 1).toString() + '</th>';
-            } else {
-                o1 += '<tr><th class="col text-center border border-dark" style="background-color:' + color + '">' + i.toString() + '</th>';
+        }
+        // Draw end of list
+        if (cache_data["placement_policy"]["type"] == "Set-associative"){
+            var num_sets = Math.floor(cache_data["num_lines"] / cache_data["placement_policy"]["num_ways"])
+            distance_to_next = num_sets - index;
+            if (distance_to_next < max_distance_between_data){
+                for(index; index <= num_sets; index++){
+                    for (var z = 0; z < cache_data["placement_policy"]["num_ways"]; z++){
+                        line_address = "";
+                        color = colors[index % colors.length];
+                        o1 += cache_memory_table_draw_row(index, line_address, color);                        
+                    }
+                }
             }
-            o1 += '<th class="col text-center border border-dark" style="background-color:' + color + '">' + line_address + '</th></tr>';
+            else {
+                o1 += cache_memory_table_draw_row(0, 0, "", true);
+                index += distance_to_next;
+                for (var z = 0; z < cache_data["placement_policy"]["num_ways"]; z++){
+                    line_address = "";
+                    color = colors[index % colors.length];
+                    o1 += cache_memory_table_draw_row(index, line_address, color);                        
+                }
+            }
+        }
+        else {
+            // Distance to end of table
+            distance_to_next = cache_data["num_lines"] - 3 - index;
+            // End near
+            if (distance_to_next < max_distance_between_data){
+                for (index; index <= cache_data["num_lines"]; index++){
+                    line_address = "";
+                    color = colors[index % colors.length];
+                    o1 += cache_memory_table_draw_row(index, line_address, color);
+                }
+            }
+            // End far away
+            else {
+                for(var z = 0; z < max_distance_between_data + 4; z++){
+                    line_address = "";
+                    color = colors[index%colors.length]
+                    o1 += cache_memory_table_draw_row(index, line_address, color, (z == max_distance_between_data - 1 ? true : false));
+                    index += (z == max_distance_between_data - 1 ? distance_to_next - max_distance_between_data + 1 : 1);
+                }
+            }
         }
         o1 += '</table></div>';
     }
     $(div_hash).html(o1);
+}
+
+function cache_memory_table_draw_row(index, address, color, draw_empty=false){
+    row = "";
+    if (draw_empty){
+        row += '<tr><th class="col text-center">...</th><th class="col text-center">...</th></tr>';
+    }
+    else {
+        row += '<tr><th class="col text-center border border-dark" style="background-color:' + color + '">' + index.toString() + '</th>';
+        row += '<th class="col text-center border border-dark" style="background-color:' + color + '">' + address + '</th></tr>';
+    }
+    return row;
 }
 
 function change_cache_memory_table(operation){
@@ -29772,10 +29850,10 @@ function cache_config_build_ui(){
       o1 += '<div class="col border mt-1" id="#mem_cache_config_'+ cache_level + '"><p class="p-2 bg-light">Cache ' + cache_level + '</p><table class="table table-bordered"><tbody>' +
       '<tr><td><span data-langkey="Cache-Size">Cache size (KB)</span></td><td><input type="number" min:1 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
       '<tr><td><span data-langkey=\'Cache-Line-Size\'>Line Size (Bytes)</span></td><td><input type="number" min:1 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
-      '<tr><td><span data-langkey=\'Replacement-Policy\'>Replacement policy</span></td><td><div class="form-group"><select class="form-control cache_memory_replacement_policy" id="#cache_' + cache_level + '_replacement_policy" value=' + cache_data["replacement_policy"].type + ' onchange="cache_config_change(this, ' + cache + ')">' +
-      '<option value="LFU" ' + (cache_data["replacement_policy"].type.localeCompare("LFU") == 0 ? 'selected' : '') + ' >LFU</option>' +
-      '<option value="LRU" ' + (cache_data["replacement_policy"].type.localeCompare("LRU") == 0 ? 'selected' : '') + ' >LRU</option>' +  
-      '<option value="FIFO" ' + (cache_data["replacement_policy"].type.localeCompare("FIFO") == 0 ? 'selected' : '') + '>FIFO</option>' + 
+      '<tr><td><span data-langkey=\'Replacement-Policy\'>Replacement policy</span></td><td><div class="form-group"><select class="form-control cache_memory_replacement_policy" id="#cache_' + cache_level + '_replacement_policy" value=' + cache_data["replacement_policy"] + ' onchange="cache_config_change(this, ' + cache + ')">' +
+      '<option value="LFU" ' + (cache_data["replacement_policy"].localeCompare("LFU") == 0 ? 'selected' : '') + ' >LFU</option>' +
+      '<option value="LRU" ' + (cache_data["replacement_policy"].localeCompare("LRU") == 0 ? 'selected' : '') + ' >LRU</option>' +  
+      '<option value="FIFO" ' + (cache_data["replacement_policy"].localeCompare("FIFO") == 0 ? 'selected' : '') + '>FIFO</option>' + 
       '<tr><td><span data-langkey=\'Placement-Policy\'>Placement policy</span></td><td><div class="form-group"><select class="form-control cache_memory_placement_policy" id="#cache_' + cache_level + '_policy" value=' + cache_data["placement_policy"].type + ' onchange="cache_config_change(this, ' + cache + ')">' +
       '<option value="Direct Mapped" ' + (cache_data["placement_policy"].type.localeCompare("Direct Mapped") == 0 ? 'selected' : '') + ' ><span data-langkey=\'Direct-Mapped\'>Direct Mapped</span></option>'+
       '<option value="Fully-associative" ' + (cache_data["placement_policy"].type.localeCompare("Fully-associative") == 0 ? 'selected' : '') + ' ><span data-langkey=\'Fully-Associative\'>Fully-associative</span></option>' +
@@ -29833,7 +29911,7 @@ function cache_config_change(obj, level){
         cache_memory_set_attribute(level, "line_size", parseInt(obj.value));
     }
     else if($(obj).hasClass("cache_memory_replacement_policy")){
-        cache_memory_set_attribute(level, "replacement_policy", cache_memory_replacement_policy_attr(obj.value));
+        cache_memory_set_attribute(level, "replacement_policy", obj.value);
     }
     else if($(obj).hasClass("cache_memory_policy_num_ways")){
         cache_memory_policy_set_attribute(level, "num_ways", parseInt(obj.value));
