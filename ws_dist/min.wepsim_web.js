@@ -2505,9 +2505,6 @@ function cache_memory_update_stats(memory, address, parts, r_w, m_h, clock_times
         memory.stats.n_hits++
     }
     memory.data[parts.set].tags[parts.tag].n_access++;
-    if (r_w == "write") {
-        memory.data[parts.set].tags[parts.tag].dirty = 1
-    }
 }
 
 function cache_memory_update_access_time(){
@@ -2588,15 +2585,27 @@ function segments_addr_within_text(address) {
     return address >= sim_segments[".text"].begin && address <= sim_segments[".text"].end || address >= sim_segments[".ktext"].begin && address <= sim_segments[".ktext"].end
 }
 
+var skip_next = false;
 function cache_memory_access(memory, address, r_w, clock_timestamp) {
-    var cache_level = cache_memory_get_level(memory);
-    if (cache_level.split_cache) {
-        // If instruction segment, go to instructions L1 cache and start processing there.
-        if (segments_addr_within_text(address)){
-            cache_memory_access("L1 Instructions", address, r_w, clock_timestamp);
-            return false
-        } 
+    var cache_level = simhw_internalState_get("CACHE_MEMORY", memory);
+    // Skip to next level if marked by the one before (Data to skip instructions).
+    if (skip_next == true){
+        skip_next = false;
+        if (typeof simhw_internalState_get("CACHE_MEMORY", memory + 1) != "undefined") {
+            cache_memory_access(memory + 1, address, r_w, clock_timestamp);
+        }
+        return false;
     }
+    if (cache_level.split_cache) {
+        // If instruction segment, go to instructions cache and start processing there.
+        if (segments_addr_within_text(address)){
+            cache_memory_access(memory + 1, address, r_w, clock_timestamp);
+            return false
+        }
+        // Split cache and data address, skip the instructions one
+        skip_next = true; 
+    }
+    // Label splitting
     var parts = cache_memory_split(cache_level, address);
     if (typeof cache_level.data[parts.set] == "undefined") {
         cache_level.data[parts.set] = {
@@ -2605,7 +2614,7 @@ function cache_memory_access(memory, address, r_w, clock_timestamp) {
         }
     }
     // CASE HIT
-    if (typeof cache_level.data[parts.set].tags[parts.tag] != "undefined" && cache_level.data[parts.set].tags[parts.tag].valid == 1) {
+    if (typeof cache_level.data[parts.set].tags[parts.tag] != "undefined") {
         cache_level.data[parts.set].tags[parts.tag].last_access = 0;
         cache_memory_update_stats(cache_level, address, parts, r_w, "hit", clock_timestamp);
         render_cache_memory_table();
@@ -2617,26 +2626,22 @@ function cache_memory_access(memory, address, r_w, clock_timestamp) {
     if ((cache_level.placement_policy.type == "Fully-associative" && cache_level.data[0].number_tags == cache_level.num_lines) ||
         (cache_level.placement_policy.type == "Set-associative" && cache_level.data[parts.set].number_tags == cache_level.placement_policy.num_ways)){
         var tag_victim = cache_memory_select_victim(cache_level, parts);
-        console.log(parts.set);
-        console.log(tag_victim);
         delete cache_level.data[parts.set].tags[tag_victim];
         cache_level.data[parts.set].number_tags--;
     }
     // Place block in cache
     cache_level.data[parts.set].tags[parts.tag] = {
         n_access: 0,
-        valid: 1,
-        dirty: 0,
         last_access : 0,
     };
     cache_level.data[parts.set].number_tags++;
     cache_memory_update_stats(cache_level, address, parts, r_w, "miss", clock_timestamp);
-    // Select next cache
-    var next_cache = cache_level.next_cache;
     // Access next cache
-    if (next_cache != null) {
-        cache_memory_access(next_cache, address, r_w, clock_timestamp);
+    if (typeof simhw_internalState_get("CACHE_MEMORY", memory + 1) != "undefined") {
+        cache_memory_access(memory+ 1, address, r_w, clock_timestamp);
+        return false;
     }
+    // Last cache level
     else {
         cache_memory_update_access_time();
     }
@@ -2705,22 +2710,24 @@ function cache_memory_placement_policy_calc_values(cache_data){
             attr["tag_size"] = tag_size;
             break;
     }
-    cache_memory_set_attribute(cache_data["id"], "placement_policy", attr);
 }
 
-function cache_memory_add_level(level){
+function cache_memory_add_level(level, instructions = false){
     var cur_cache = simhw_internalState("CACHE_MEMORY");
     var cur_level;
-    if (level == "L1 Instructions"){
-        cur_cache.splice(1, 0, {});
-        cur_level = cur_cache[1];
-        cur_level.id = level;
+    if (instructions){
+        var data_cache = cache_memory_get_level(level);
+        var index = cur_cache.indexOf(data_cache) + 1;
+        cur_cache.splice(index, 0, {});
+        cur_level = cur_cache[index];
+        cur_level.id = "L" + level + " Instructions";
     }
     else {
         cur_cache.push({});
         cur_level = cur_cache[cur_cache.length - 1];
         cur_level.id = "L" + level.toString();
     };
+    cur_level.level = level;
     cur_level.line_size = 1;
     cur_level.cache_size = 1;
     cur_level.num_lines = Math.round((cur_level["cache_size"]*(1024))/(cur_level["line_size"]));
@@ -2737,44 +2744,25 @@ function cache_memory_add_level(level){
         n_misses : 0,
         n_hits : 0
     }
-    cur_level.next_cache = null;
     cur_level.data = {};
     simhw_internalState_reset("CACHE_MEMORY", cur_cache);
-    // Establish next level for prior caches
-    for (var i = cur_cache.length - 1; i >= 0; i--){
-        // If a instructions cache exist, establish both L1 next cache stop. If there is just one level, break.
-        if (cur_cache[i].id == "L1 Instructions"){
-            // If there are more than 1 level, establish L2 as the next cache for both L1 and L1I
-            if (cur_cache.length > 2){
-                cur_cache[i].next_cache = "L2";
-                cur_cache[i-1].next_cache = "L2";
-            }
-            break;
-        }
-        // Ignore the last level
-        if (i == cur_cache.length - 1){
-            continue
-        }
-        // Assign the next level
-        cur_cache[i].next_cache = cur_cache[i + 1].id;
-    }
 }
 
-function cache_memory_erase_level(level){
+function cache_memory_erase_level(level, instructions = false){
     var cur_cache = simhw_internalState("CACHE_MEMORY");
-    // When removing L1, remove all cache
-    if (level == 1){
-        cur_cache = []
-    // Else
-    } else {
-        var cur_level = cache_memory_get_level(level);
-        cur_level = cur_cache.splice([cur_cache.indexOf(cur_level)], 1)[0];
-        // Establish the next level attributes
-        for (var i = 0; i < cur_cache.length; i++){
-            if (cur_cache[i].next_cache === cur_level.id){
-                cur_cache[i].next_cache = null;
-            }
-        }
+    // When removing a splited cache, remove both
+    var cache_data = cache_memory_get_level(level);
+    // Remove only instructions
+    if (instructions == true){
+        cur_cache.splice(cur_cache.indexOf(cache_data) + 1, 1);
+    }
+    // Remove both data and instructions
+    else if(cache_data.split_cache == true && instructions == false){
+        cur_cache.splice(cur_cache.indexOf(cache_data), 2);
+    }
+    // No split, remove only data
+    else{
+        cur_cache.splice(cur_cache.indexOf(cache_data), 1);
     }
     simhw_internalState_reset("CACHE_MEMORY", cur_cache);
 }
@@ -2782,19 +2770,20 @@ function cache_memory_erase_level(level){
 function cache_memory_get_level(level){
     var cache_data = simhw_internalState("CACHE_MEMORY");
     for (cache in cache_data){
-        if (cache_data[cache]["id"] == level){
+        if (cache_data[cache].level == level){
             return cache_data[cache];
         }
     }
     return null;
 }
+
 function cache_memory_set_attribute(level, attribute, value){
-    var cache_level = cache_memory_get_level(level);
+    var cache_level = simhw_internalState_get("CACHE_MEMORY", level);
     cache_level[attribute] = value;
 }
 
 function cache_memory_policy_set_attribute(level, attribute, value){
-    var cache_level = cache_memory_get_level(level);
+    var cache_level = simhw_internalState_get("CACHE_MEMORY", level);
     cache_level["placement_policy"][attribute] = value;
 }
 
@@ -7555,7 +7544,7 @@ sim.ep.behaviors.MEM_READ = {
         sim.ep.signals[s_expr[4]].value = 1;
         show_main_memory(sim.ep.internal_states.MP, address, full_redraw, false);
         if (first_time && (sim.ep.internal_states.CACHE_MEMORY.length > 0)) {
-            cache_memory_access("L1", address, "read", clk) ;
+            cache_memory_access(0, address, "read", clk) ;
         }
     },
     verbal: function(s_expr) {
@@ -7618,7 +7607,7 @@ sim.ep.behaviors.MEM_WRITE = {
         show_main_memory(sim.ep.internal_states.MP, address, full_redraw, true)
         // cache
         if (first_time && (sim.ep.internal_states.CACHE_MEMORY.length > 0)) {
-            cache_memory_access("L1", address, "write", clk) ;
+            cache_memory_access(0, address, "write", clk) ;
         }
         // Statistics
         var val = get_value(sim.ep.states["MEM_ACC"]);
@@ -29404,7 +29393,6 @@ function simcoreui_hw_states_update(ahw) {
             var addr = sim.active.states.REG_MAR.value.state.value;
             for (cache in caches){
                 var cache_data = simhw_internalState_get("CACHE_MEMORY", cache);
-                
                 // If current cache level is 1, there´s an instructions cache and addr is instruction, ignore current cache
                 if (cache_data.id == "L1" && cache_data.split_cache == true && segments_addr_within_text(addr) == true){
                     continue;
@@ -29426,7 +29414,7 @@ function simcoreui_hw_states_update(ahw) {
             }
             // Add memory tag if no hit
             if (hit == false){
-                line += "MP (" + addr  + ")";
+                line += "MP (" + addr.toString(16).padStart(8, '0')  + ")";
             }
             $("#REG_MAR_CACHE").html(line + "<br>" + miss_line);
         }
@@ -29439,13 +29427,13 @@ function cache_memory_get_last_access_string(cache_data){
     miss_line += "(";
     switch (cache_data.placement_policy.type){
         case "Direct Mapped":
-            miss_line += "Tag: " + cache_data.stats.last_parts.tag + " Line: " + (cache_data.stats.last_parts.set + 1);
+            miss_line += "Tag: " + cache_data.stats.last_parts.tag.toString(2).padStart(cache_data.placement_policy.tag_size, '0') + " Line: " + (cache_data.stats.last_parts.set);
             break;
         case "Fully-associative": 
-            miss_line += "Tag: " + cache_data.stats.last_parts.tag;
+            miss_line += "Tag: " + cache_data.stats.last_parts.tag.toString(2).padStart(cache_data.placement_policy.tag_size, '0');
             break;
         case "Set-associative":
-            miss_line += "Tag: " + cache_data.stats.last_parts.tag + " Set: " + (cache_data.stats.last_parts.set + 1);
+            miss_line += "Tag: " + cache_data.stats.last_parts.tag.toString(2).padStart(cache_data.placement_policy.tag_size, '0') + " Set: " + (cache_data.stats.last_parts.set);
             break;
     }
     miss_line += ")"
@@ -29620,7 +29608,7 @@ async function render_cache_memory_table(){
     var colors = ["#FF99CC", "#A9D0F5", "#FACC2E"];
     // Empty configuration
     if (typeof simhw_internalState("CACHE_MEMORY") == "undefined" || simhw_internalState("CACHE_MEMORY").length == 0){
-        o1 += '<div class="h-100 w-100 justify-content-center text-center align-text-middle align-middle"><span class="align-middle">No hay ninguna memoria caché creada, para añadir una, ve a <b>Cache Configuration</b></span></div>';
+        o1 += '<div class="h-100 w-100 justify-content-center text-center align-text-middle align-middle"><span class="align-middle">No cache memory has been defined, to add one, please use <span class="btn btn-sm btn-info text-white" onclick="wsweb_set_details_select(28);"><b>Cache Configuration</b></span> first</span></div>';
         $(div_hash).html(o1);
     }
     // Data, show status
@@ -29645,7 +29633,7 @@ async function render_cache_memory_table(){
         }
         o1 += '<th class="col text-center border border-dark bg-light">Tag</th></tr>';
         // DRAW DATA
-        var index = 1;
+        var index = 0;
         var line_address = 0;
         var distance_to_next = 0;
         var max_distance_between_data = 0;
@@ -29658,7 +29646,7 @@ async function render_cache_memory_table(){
                 for (var z = 0; z <= list.length - 1; z++){
                     line_address = list[z];
                     color = colors[index % colors.length];
-                    o1 += cache_memory_table_draw_row(index, line_address, color);
+                    o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size);
                     index += 1;
                 }
             }
@@ -29671,33 +29659,34 @@ async function render_cache_memory_table(){
             max_distance_between_data = (cache_data["placement_policy"]["type"] == "Set-associative" ? 3 : 5);
             while (typeof list[list_index] != "undefined"){
                 //There are objects left on the list"
-                distance_to_next = Number.parseInt(list[list_index][0]) - index + 1;
+                distance_to_next = Number.parseInt(list[list_index][0]) - index;
                 next_block = Number.parseInt(list[list_index][0]);
                 // Distance to next is smaller than max_distance_between data
                 if (distance_to_next <= max_distance_between_data){
-                    for(index; index <= next_block + 1; index++){
+                    for(index; index <= next_block; index++){
                         // Set-associative
                         if (cache_data["placement_policy"]["type"] == "Set-associative"){
-                            var tags = (typeof cache_data["data"][index - 1] != "undefined" ? Object.keys(cache_data["data"][index - 1]["tags"]) : []);
+                            var tags = (typeof cache_data["data"][index] != "undefined" ? Object.keys(cache_data["data"][index]["tags"]) : []);
                             for(var z = 0; z < cache_data["placement_policy"]["num_ways"]; z++){
                                 line_address = (typeof tags[z] != "undefined" ? tags[z] : "");
                                 color = colors[index % colors.length];
-                                o1 += cache_memory_table_draw_row(index, line_address, color);
+                                o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size);
                             }
                         }
                         // Direct-Mapped
                         else {
-                            line_address = (index == next_block + 1 ? Object.keys(cache_data["data"][next_block]["tags"])[0] : "");
+                            line_address = (index == next_block ? Object.keys(cache_data["data"][next_block]["tags"])[0] : "");
                             color = colors[index % colors.length];
-                            o1 += cache_memory_table_draw_row(index, line_address, color);
+                            o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size);
                         }
                     }
                 }
                 // Distance to next is bigger than max_distance_between_data
                 else {
                     for(var z = 0; z < (max_distance_between_data + 2); z++){
+                        // Set-associative
                         if (cache_data["placement_policy"]["type"] == "Set-associative"){
-                            var tags = (typeof cache_data["data"][index - 1] != "undefined" ? Object.keys(cache_data["data"][index - 1]["tags"]) : []);
+                            var tags = (typeof cache_data["data"][index] != "undefined" ? Object.keys(cache_data["data"][index]["tags"]) : []);
                             if (z != max_distance_between_data){
                                 for (var t = 0; t < cache_data["placement_policy"]["num_ways"]; t++){
                                     if (z == max_distance_between_data + 1){
@@ -29706,19 +29695,20 @@ async function render_cache_memory_table(){
                                         line_address = "";
                                     }
                                     color = colors[(index + z) % colors.length];
-                                    o1 += cache_memory_table_draw_row(index, line_address, color);
+                                    o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size);
                                 }
                                 index += 1;
                             }
                             else {
-                                o1 += cache_memory_table_draw_row(0, 0, "", true)
+                                o1 += cache_memory_table_draw_row(0, 0, "", 0, true)
                                 index += distance_to_next - max_distance_between_data;
                             }
                         }
+                        // Direct-mapped
                         else {
                             line_address = (z == max_distance_between_data + 1 ? Object.keys(cache_data["data"][next_block]["tags"])[0] : "");
                             color = colors[index % colors.length];
-                            o1 += cache_memory_table_draw_row(index, line_address, color, (z==max_distance_between_data - 1 ? true : false));
+                            o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size, (z==max_distance_between_data - 1 ? true : false));
                             index += (z == max_distance_between_data - 1 ? distance_to_next - max_distance_between_data : 1);
                         }
                     }
@@ -29727,37 +29717,41 @@ async function render_cache_memory_table(){
             }
         }
         // Draw end of list
+        // Set-associative
         if (cache_data["placement_policy"]["type"] == "Set-associative"){
             var num_sets = Math.floor(cache_data["num_lines"] / cache_data["placement_policy"]["num_ways"])
-            distance_to_next = num_sets - index;
+            distance_to_next = num_sets - index - 1;
+            // End near
             if (distance_to_next < max_distance_between_data){
-                for(index; index <= num_sets; index++){
+                for(index; index < num_sets; index++){
                     for (var z = 0; z < cache_data["placement_policy"]["num_ways"]; z++){
                         line_address = "";
                         color = colors[index % colors.length];
-                        o1 += cache_memory_table_draw_row(index, line_address, color);                        
+                        o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size);                        
                     }
                 }
             }
+            // End far away
             else {
-                o1 += cache_memory_table_draw_row(0, 0, "", true);
+                o1 += cache_memory_table_draw_row(0, 0, "", 0, true);
                 index += distance_to_next;
                 for (var z = 0; z < cache_data["placement_policy"]["num_ways"]; z++){
                     line_address = "";
                     color = colors[index % colors.length];
-                    o1 += cache_memory_table_draw_row(index, line_address, color);                        
+                    o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size);                        
                 }
             }
         }
+        // Fully-associative and Direct-Mapped
         else {
             // Distance to end of table
             distance_to_next = cache_data["num_lines"] - 3 - index;
             // End near
             if (distance_to_next < max_distance_between_data){
-                for (index; index <= cache_data["num_lines"]; index++){
+                for (index; index < cache_data["num_lines"]; index++){
                     line_address = "";
                     color = colors[index % colors.length];
-                    o1 += cache_memory_table_draw_row(index, line_address, color);
+                    o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size);
                 }
             }
             // End far away
@@ -29765,8 +29759,8 @@ async function render_cache_memory_table(){
                 for(var z = 0; z < max_distance_between_data + 4; z++){
                     line_address = "";
                     color = colors[index%colors.length]
-                    o1 += cache_memory_table_draw_row(index, line_address, color, (z == max_distance_between_data - 1 ? true : false));
-                    index += (z == max_distance_between_data - 1 ? distance_to_next - max_distance_between_data + 1 : 1);
+                    o1 += cache_memory_table_draw_row(index, line_address, color, cache_data.placement_policy.tag_size, (z == max_distance_between_data - 1 ? true : false));
+                    index += (z == max_distance_between_data - 1 ? distance_to_next - max_distance_between_data : 1);
                 }
             }
         }
@@ -29775,14 +29769,19 @@ async function render_cache_memory_table(){
     $(div_hash).html(o1);
 }
 
-function cache_memory_table_draw_row(index, address, color, draw_empty=false){
+function cache_memory_table_draw_row(index, tag, color, tag_size, draw_empty=false){
     row = "";
     if (draw_empty){
         row += '<tr><th class="col text-center">...</th><th class="col text-center">...</th></tr>';
     }
     else {
         row += '<tr><th class="col text-center border border-dark" style="background-color:' + color + '">' + index.toString() + '</th>';
-        row += '<th class="col text-center border border-dark" style="background-color:' + color + '">' + address + '</th></tr>';
+        if (tag == ""){
+            row += '<th class="col text-center border border-dark" style="background-color:' + color + '">' + tag + '</th></tr>';
+        }
+        else {
+            row += '<th class="col text-center border border-dark" style="background-color:' + color + '">' + Number.parseInt(tag).toString(2).padStart(tag_size, '0') + '</th></tr>';
+        }
     }
     return row;
 }
@@ -29846,7 +29845,7 @@ function cache_config_build_ui(){
     let caches = simhw_internalState("CACHE_MEMORY");
     for (cache in caches){
       let cache_data = simhw_internalState_get("CACHE_MEMORY", cache);
-      let cache_level = cache_data["id"]
+      let cache_level = cache_data["id"];
       o1 += '<div class="col border mt-1" id="#mem_cache_config_'+ cache_level + '"><p class="p-2 bg-light">Cache ' + cache_level + '</p><table class="table table-bordered"><tbody>' +
       '<tr><td><span data-langkey="Cache-Size">Cache size (KB)</span></td><td><input type="number" min:1 class="cache_memory_size" value=' + cache_data["cache_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
       '<tr><td><span data-langkey=\'Cache-Line-Size\'>Line Size (Bytes)</span></td><td><input type="number" min:1 class="cache_memory_line_size" value=' + cache_data["line_size"] + ' onchange="cache_config_change(this, ' + cache + ')"></td></tr>' +
@@ -29904,34 +29903,42 @@ function cache_config_decrease_level(){
     cache_config_build_ui();   
 }
 
-function cache_config_change(obj, level){
-    var cache_level = simhw_internalState_get("CACHE_MEMORY", level);
-    level = cache_level["id"];
+function cache_config_change(obj, index){
+    var cache_level = simhw_internalState_get("CACHE_MEMORY", index);
     if ($(obj).hasClass("cache_memory_line_size")){
-        cache_memory_set_attribute(level, "line_size", parseInt(obj.value));
+        if (parseInt(obj.value) > 4294967296 || parseInt(obj.value) < 1){
+            obj.value = 1;
+        }
+        cache_memory_set_attribute(index, "line_size", parseInt(obj.value));
     }
     else if($(obj).hasClass("cache_memory_replacement_policy")){
-        cache_memory_set_attribute(level, "replacement_policy", obj.value);
+        cache_memory_set_attribute(index, "replacement_policy", obj.value);
     }
     else if($(obj).hasClass("cache_memory_policy_num_ways")){
-        cache_memory_policy_set_attribute(level, "num_ways", parseInt(obj.value));
+        if (parseInt(obj.value) > cache_level["num_lines"] || parseInt(obj.value) < 1){
+            obj.value = 1;
+        }
+        cache_memory_policy_set_attribute(index, "num_ways", parseInt(obj.value));
     }
     else if($(obj).hasClass("cache_memory_split_instruction")){
-        cache_memory_set_attribute(level, "split_cache", obj.checked);
+        cache_memory_set_attribute(index, "split_cache", obj.checked);
         if(obj.checked){
-            cache_memory_add_level("L1 Instructions");
+            cache_memory_add_level(cache_level.level, true);
         }
         else {
-            cache_memory_erase_level("L1 Instructions");
+            cache_memory_erase_level(cache_level.level, true);
         }
     }
     else if($(obj).hasClass("cache_memory_size")){
-        cache_memory_set_attribute(level, "cache_size", parseInt(obj.value));
+        if (parseInt(obj.value) > 4194304 || parseInt(obj.value) < 1){
+            obj.value = 1;
+        }
+        cache_memory_set_attribute(index, "cache_size", parseInt(obj.value));
     }
     var num_lines = Math.floor((cache_level["cache_size"]*(1024))/(cache_level["line_size"]));
-    cache_memory_set_attribute(level, "num_lines", num_lines);
+    cache_memory_set_attribute(index, "num_lines", num_lines);
     if($(obj).hasClass("cache_memory_placement_policy")){
-        cache_memory_set_attribute(level, "placement_policy", cache_memory_placement_policy_attr(obj.value, cache_level));
+        cache_memory_set_attribute(index, "placement_policy", cache_memory_placement_policy_attr(obj.value, cache_level));
     }
     cache_memory_placement_policy_calc_values(cache_level);
     cache_config_build_ui();
